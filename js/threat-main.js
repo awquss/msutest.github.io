@@ -1511,10 +1511,22 @@ async function init() {
         return null;
       }
       if (state.points.length < 2) {
-        return { ...row.releasePoint, time: 0, distMeters: 0 };
+        return {
+          ...row.releasePoint,
+          time: 0,
+          distMeters: 0,
+          altitude: Number(state.points[0]?.altitude ?? 0),
+          speed: Number(state.points[0]?.speed ?? 0)
+        };
       }
       const projection = getRouteProjection(row.releasePoint);
-      return projection || { ...row.releasePoint, time: 0, distMeters: Number.POSITIVE_INFINITY };
+      return projection || {
+        ...row.releasePoint,
+        time: 0,
+        distMeters: Number.POSITIVE_INFINITY,
+        altitude: Number(state.points[0]?.altitude ?? 0),
+        speed: Number(state.points[0]?.speed ?? 0)
+      };
     }
 
     function getPayloadTimingTargetPoint(row) {
@@ -2432,6 +2444,7 @@ async function init() {
         entity.payload = state.payloadRows.map((row, i) => {
           const weapon = state.weapons.find((w) => w.id === row.weaponId);
           const releaseRow = timeline.info.releaseRows?.[i];
+          const releaseAltitude = round(releaseRow?.releaseProjection?.altitude ?? start.altitude ?? 0, 3);
           return {
             id: weapon.id,
             category: normalizePayloadCategory(weapon.category),
@@ -2450,9 +2463,9 @@ async function init() {
             releasePoint3D: [
               round(releaseRow?.releaseProjection?.x ?? row.releasePoint?.x ?? 0, 3),
               round(releaseRow?.releaseProjection?.y ?? row.releasePoint?.y ?? 0, 3),
-              0
+              releaseAltitude
             ],
-            releasePointZ: 0,
+            releasePointZ: releaseAltitude,
             targetPoint: [
               round((releaseRow?.target || row.targetPoint || state.attackTarget).x, 3),
               round((releaseRow?.target || row.targetPoint || state.attackTarget).y, 3)
@@ -3012,9 +3025,11 @@ async function init() {
         const py = seg.a.y + dy * t;
         const distMeters = Math.hypot(point.x - px, point.y - py);
         const time = seg.cumStart + seg.dt * t;
+        const altitude = Number(seg.a.altitude) + ((Number(seg.b.altitude) - Number(seg.a.altitude)) * t);
+        const speed = Number(seg.a.speed) + ((Number(seg.b.speed) - Number(seg.a.speed)) * t);
 
         if (!best || distMeters < best.distMeters) {
-          best = { x: px, y: py, distMeters, time };
+          best = { x: px, y: py, distMeters, time, altitude, speed };
         }
       }
 
