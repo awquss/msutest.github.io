@@ -2027,11 +2027,15 @@ function getNextDeploymentAssignmentCounter(plans) {
   return maxCounter + 1;
 }
 
+function buildComponentLayoutUnitKey(planId, assignmentId, systemCode, unitOrdinal) {
+  return `${planId}:${assignmentId}:${systemCode}-U${Math.max(1, Math.floor(Number(unitOrdinal) || 1))}`;
+}
+
 function normalizeImportedUnitLayout(unit) {
   const planId = String(unit?.planId || "").trim();
   const systemCode = String(unit?.systemCode || "").trim();
-  const sequence = Math.max(1, Math.floor(Number(unit?.sequence) || 1));
   const assignmentId = String(unit?.assignmentId || "").trim() || String(unit?.munitionCode || "").trim() || systemCode;
+  const unitOrdinal = Math.max(1, Math.floor(Number(unit?.assignmentUnitIndex) + 1 || Number(unit?.sequence) || 1));
   const radar = unit?.components?.radar;
   const kkm = unit?.components?.kkm;
   const ffs = Array.isArray(unit?.components?.ffs) ? unit.components.ffs : [];
@@ -2071,7 +2075,7 @@ function normalizeImportedUnitLayout(unit) {
   }
 
   return {
-    unitKey: `${planId}:${assignmentId}:${systemCode}-${sequence}`,
+    unitKey: buildComponentLayoutUnitKey(planId, assignmentId, systemCode, unitOrdinal),
     layout
   };
 }
@@ -3994,6 +3998,7 @@ function buildDeployedUnitExport(unit) {
     id: unitId,
     planId: unit.planId,
     assignmentId: String(unit.assignmentId || ""),
+    assignmentUnitIndex: Math.max(0, Math.floor(Number(unit.assignmentUnitIndex) || 0)),
     protectedAssetId: unit.regionId,
     systemCode: unit.code,
     munitionCode,
@@ -4127,11 +4132,13 @@ function getOrCreateComponentLayout(unitKey, radarBase, center, constraints, com
   if (!state.componentLayoutsByUnitKey[unitKey]) {
     state.componentLayoutsByUnitKey[unitKey] = defaultLayout;
   } else {
-    const currentLayout = normalizeComponentLayout(state.componentLayoutsByUnitKey[unitKey], componentSpec, defaultLayout);
-    const deltaX = Math.round(numberOrZero(defaultLayout.radar.x) - numberOrZero(currentLayout.radar.x));
-    const deltaY = Math.round(numberOrZero(defaultLayout.radar.y) - numberOrZero(currentLayout.radar.y));
-    state.componentLayoutsByUnitKey[unitKey] =
-      deltaX === 0 && deltaY === 0 ? currentLayout : shiftComponentLayout(currentLayout, deltaX, deltaY);
+    // Keep explicit user edits at their absolute coordinates instead of snapping
+    // them back to the auto-generated placement every time the preview refreshes.
+    state.componentLayoutsByUnitKey[unitKey] = normalizeComponentLayout(
+      state.componentLayoutsByUnitKey[unitKey],
+      componentSpec,
+      defaultLayout
+    );
   }
   state.componentLayoutsByUnitKey[unitKey] = normalizeComponentLayout(
     state.componentLayoutsByUnitKey[unitKey],
@@ -5757,7 +5764,12 @@ function buildDeploymentPreviewByPlanId(planId) {
       const sequence = sequenceByCode[assignment.code];
       const assignmentId = candidate.assignmentId;
       const componentSpec = candidate.componentSpec;
-      const unitKey = `${plan.id}:${assignmentId}:${assignment.code}-U${candidate.assignmentUnitIndex + 1}`;
+      const unitKey = buildComponentLayoutUnitKey(
+        plan.id,
+        assignmentId,
+        assignment.code,
+        candidate.assignmentUnitIndex + 1
+      );
       const components = getOrCreateComponentLayout(
         unitKey,
         point,
