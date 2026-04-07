@@ -54,6 +54,7 @@ const state = {
       ballisticImpactSource: { mode: "", defendedAssetId: "" },
       savedKinematicEntities: [],
       savedBallisticEntities: [],
+      editingKinematicIndex: -1,
       kinematicEntityCounter: 1,
       ballisticEntityCounter: 1,
       scenario: null,
@@ -438,6 +439,16 @@ async function init() {
       }
 
       return null;
+    }
+
+    function resetKinematicEditMode() {
+      state.editingKinematicIndex = -1;
+      refs.addKinematicEntityBtn.textContent = "Platform Ekle";
+    }
+
+    function setKinematicEditMode(index) {
+      state.editingKinematicIndex = index;
+      refs.addKinematicEntityBtn.textContent = "Platform Güncelle";
     }
 
     function getNextImportedThreatCounter(items) {
@@ -2214,6 +2225,7 @@ async function init() {
     }
 
     function clearKinematicDraft() {
+      resetKinematicEditMode();
       state.selectedPlatform = null;
       refs.platformSelect.value = "";
       refs.totTime.value = DEFAULTS.totTime;
@@ -2377,7 +2389,7 @@ async function init() {
       return errors;
     }
 
-    function buildCurrentKinematicEntity(showPopupOnError = false) {
+    function buildCurrentKinematicEntity(showPopupOnError = false, existingEntityId = "") {
       if (!state.selectedPlatform || state.points.length === 0) {
         if (showPopupOnError) {
           popupErrors(["Kinetik hedef için platform seçip rota oluşturun."]);
@@ -2420,7 +2432,7 @@ async function init() {
       }));
 
       const entity = {
-        id: `${state.selectedPlatform.id}-entity-${entityNo}`,
+        id: String(existingEntityId || `${state.selectedPlatform.id}-entity-${entityNo}`),
         entityType: "KinematicTarget",
         category: state.selectedPlatform.category,
         model: state.selectedPlatform.model,
@@ -2562,16 +2574,199 @@ async function init() {
       };
     }
 
+    function findPlatformForKinematicEntity(entity) {
+      const entityId = String(entity?.id || "").trim();
+      const baseIdMatch = entityId.match(/^(.+)-entity-\d+$/i);
+      const baseId = baseIdMatch ? baseIdMatch[1] : "";
+      return state.platforms.find((item) => item.id === baseId) ||
+        state.platforms.find((item) =>
+          String(item?.model || "").trim() === String(entity?.model || "").trim() &&
+          String(item?.category || "").trim() === String(entity?.category || "").trim()
+        ) ||
+        null;
+    }
+
+    function createRoutePoint(position, altitude, speed) {
+      const coords = Array.isArray(position) ? position : [];
+      return {
+        x: round(coords[0] ?? 0, 3),
+        y: round(coords[1] ?? 0, 3),
+        altitude: Number(altitude) || 0,
+        speed: Number(speed) || 0
+      };
+    }
+
+    function restoreTargetSelection(definition, fallbackPoint, fallbackMode = "manual") {
+      const sourceMode = String(definition?.mode || "").trim();
+      const defendedAssetId = String(definition?.defendedAssetId || "").trim();
+      const rawPoint = Array.isArray(definition?.targetPoint)
+        ? definition.targetPoint
+        : Array.isArray(definition?.impactPoint)
+          ? definition.impactPoint
+          : null;
+      const point = rawPoint && rawPoint.length >= 2
+        ? { x: Number(rawPoint[0]) || 0, y: Number(rawPoint[1]) || 0 }
+        : fallbackPoint
+          ? { x: Number(fallbackPoint.x) || 0, y: Number(fallbackPoint.y) || 0 }
+          : null;
+
+      if (sourceMode === "defendedAsset" && defendedAssetId) {
+        return {
+          source: { mode: "defendedAsset", defendedAssetId },
+          point: getDefendedAssetCenter(defendedAssetId) || point
+        };
+      }
+      if (sourceMode === "attackTarget") {
+        return {
+          source: { mode: "attackTarget", defendedAssetId: "" },
+          point
+        };
+      }
+      if (sourceMode === "manual") {
+        return {
+          source: { mode: "manual", defendedAssetId: "" },
+          point
+        };
+      }
+      return {
+        source: { mode: fallbackMode, defendedAssetId: "" },
+        point
+      };
+    }
+
+    function restorePayloadRowsFromEntity(entity, takeoffTime) {
+      const payloads = Array.isArray(entity?.payload) ? entity.payload : [];
+      return payloads.map((payload) => {
+        const releasePoint = Array.isArray(payload?.releasePoint) && payload.releasePoint.length >= 2
+          ? { x: Number(payload.releasePoint[0]) || 0, y: Number(payload.releasePoint[1]) || 0 }
+          : null;
+        const targetFallback = Array.isArray(payload?.targetPoint) && payload.targetPoint.length >= 2
+          ? { x: Number(payload.targetPoint[0]) || 0, y: Number(payload.targetPoint[1]) || 0 }
+          : null;
+        const restoredTarget = restoreTargetSelection(payload?.targetDefinition, targetFallback, "attackTarget");
+        const projection = releasePoint ? getRouteProjection(releasePoint) : null;
+        const releaseAbs = Number(payload?.release?.time);
+        const releaseRelative = Number.isFinite(releaseAbs) ? releaseAbs - takeoffTime : null;
+        const releaseOffset = Number.isFinite(releaseRelative) && projection
+          ? round(releaseRelative - Number(projection.time || 0), 2)
+          : 0;
+
+        return {
+          weaponId: String(payload?.id || "").trim(),
+          targetTot: Number.isFinite(Number(payload?.targetTot)) ? round(Number(payload.targetTot), 2) : null,
+          releaseTime: Number.isFinite(releaseAbs) ? round(releaseAbs, 2) : null,
+          weaponFlightTime: null,
+          releaseOffset,
+          releasePoint,
+          targetPoint: restoredTarget.point,
+          targetSource: restoredTarget.source,
+          targetManual: restoredTarget.source.mode === "manual"
+        };
+      });
+    }
+
+    function loadSavedKinematicEntityForEdit(index) {
+      const item = state.savedKinematicEntities[index];
+      if (!item?.entity) {
+        return;
+      }
+
+      const platform = findPlatformForKinematicEntity(item.entity);
+      if (!platform) {
+        popupErrors([`Platform kataloğunda eşleşen kayıt bulunamadı: ${item.entity.id || item.entity.model || "Bilinmeyen platform"}`]);
+        return;
+      }
+
+      const initialState = item.entity?.flightPlan?.initialState || {};
+      const waypoints = Array.isArray(item.entity?.flightPlan?.waypoints) ? item.entity.flightPlan.waypoints : [];
+      const points = [];
+      if (Array.isArray(initialState.position) && initialState.position.length >= 2) {
+        points.push(createRoutePoint(initialState.position, initialState.altitude, initialState.speed));
+      }
+      for (const waypoint of waypoints) {
+        if (Array.isArray(waypoint?.position) && waypoint.position.length >= 2) {
+          points.push(createRoutePoint(waypoint.position, waypoint.targetAltitude, waypoint.targetSpeed));
+        }
+      }
+
+      if (!points.length) {
+        popupErrors(["Seçilen platform için düzenlenebilir rota bilgisi bulunamadı."]);
+        return;
+      }
+
+      refs.platformSelect.value = platform.id;
+      onPlatformChange();
+
+      state.points = points;
+      const lastPoint = points[points.length - 1];
+      const restoredAttack = restoreTargetSelection(
+        item.planning?.attackTargetDefinition,
+        lastPoint ? { x: lastPoint.x, y: lastPoint.y } : state.attackTarget,
+        "manual"
+      );
+      state.attackTargetSource = {
+        mode: restoredAttack.source.mode === "defendedAsset" ? "defendedAsset" : "manual",
+        defendedAssetId: restoredAttack.source.mode === "defendedAsset" ? restoredAttack.source.defendedAssetId : ""
+      };
+      state.attackTarget = restoredAttack.point || (lastPoint ? { x: lastPoint.x, y: lastPoint.y } : { ...DEFAULTS.attackTarget });
+      state.lockRouteTargetWaypoint = Boolean(state.selectedPlatform);
+      syncAttackTargetWithSource();
+      syncTargetInputs();
+      syncLockedRouteTarget();
+
+      const route = getRouteSegments();
+      const takeoffTime = Math.max(1, Number(item.entity?.flightPlan?.takeoffTime) || 0);
+      const importedTot = Number(item?.planning?.platformTot);
+      const nextTot = Number.isFinite(importedTot) && importedTot > 0
+        ? importedTot
+        : round(takeoffTime + route.total, 2);
+      refs.totTime.value = String(nextTot);
+      state.totManuallyEdited = true;
+      normalizePlatformTotToRoute({ preserveManual: true });
+
+      state.payloadRows = restorePayloadRowsFromEntity(item.entity, takeoffTime);
+      state.payloadEnabled = state.payloadRows.length > 0;
+      state.activePayloadRowIndex = 0;
+      syncPayloadTargetWithAttackIfNeeded();
+      syncAllPayloadTimingRows();
+      populatePayloadTargetSelect();
+      syncPayloadTargetWithSource();
+      syncPayloadPointInputs();
+      renderPointTable();
+      renderPayloadTable();
+      updatePayloadPlanInfo();
+      renderConstraintSummary();
+      drawCanvas();
+      buildScenario(false);
+
+      setKinematicEditMode(index);
+      activateTab("kinematic");
+      refs.status.textContent = `Platform düzenleme moduna alındı (#${index + 1}). Güncellemek için "Platform Güncelle" butonunu kullanın.`;
+      refs.status.className = "status info";
+    }
+
     function addCurrentKinematicToScenario() {
-      const built = buildCurrentKinematicEntity(true);
+      const editingIndex = Number(state.editingKinematicIndex);
+      const isEditingExisting = Number.isInteger(editingIndex) && editingIndex >= 0 && editingIndex < state.savedKinematicEntities.length;
+      const existingEntityId =
+        isEditingExisting
+          ? String(state.savedKinematicEntities[editingIndex]?.entity?.id || "")
+          : "";
+      const built = buildCurrentKinematicEntity(true, existingEntityId);
       if (!built) {
         return;
       }
-      state.savedKinematicEntities.push(built);
-      state.kinematicEntityCounter += 1;
+      if (isEditingExisting) {
+        state.savedKinematicEntities[editingIndex] = built;
+      } else {
+        state.savedKinematicEntities.push(built);
+        state.kinematicEntityCounter += 1;
+      }
       renderSavedKinematicTable();
       clearKinematicDraft();
-      refs.status.textContent = `Kinetik hedef senaryoya eklendi (${state.savedKinematicEntities.length}).`;
+      refs.status.textContent = isEditingExisting
+        ? `Kinetik hedef güncellendi (${editingIndex + 1}).`
+        : `Kinetik hedef senaryoya eklendi (${state.savedKinematicEntities.length}).`;
       refs.status.className = "status ok";
       notifyParentScenarioSummaryChanged();
       buildScenario(false);
@@ -2601,15 +2796,33 @@ async function init() {
           <td>${item.summary.model}</td>
           <td>${item.summary.points}</td>
           <td>${item.summary.payloadCount}</td>
-          <td><button class="ghost" type="button" data-role="rm-kin" data-index="${idx}">Sil</button></td>
+          <td>
+            <div class="table-action-group">
+              <button class="ghost" type="button" data-role="edit-kin" data-index="${idx}">Düzenle</button>
+              <button class="ghost" type="button" data-role="rm-kin" data-index="${idx}">Sil</button>
+            </div>
+          </td>
         `;
         refs.kinematicEntityTableBody.appendChild(tr);
       });
+      for (const btn of refs.kinematicEntityTableBody.querySelectorAll("button[data-role='edit-kin']")) {
+        btn.addEventListener("click", (event) => {
+          const i = Number(event.target.dataset.index);
+          if (Number.isFinite(i) && i >= 0 && i < state.savedKinematicEntities.length) {
+            loadSavedKinematicEntityForEdit(i);
+          }
+        });
+      }
       for (const btn of refs.kinematicEntityTableBody.querySelectorAll("button[data-role='rm-kin']")) {
         btn.addEventListener("click", (event) => {
           const i = Number(event.target.dataset.index);
           if (Number.isFinite(i) && i >= 0 && i < state.savedKinematicEntities.length) {
             state.savedKinematicEntities.splice(i, 1);
+            if (state.editingKinematicIndex === i) {
+              clearKinematicDraft();
+            } else if (state.editingKinematicIndex > i) {
+              state.editingKinematicIndex -= 1;
+            }
             renderSavedKinematicTable();
             notifyParentScenarioSummaryChanged();
             buildScenario(false);
