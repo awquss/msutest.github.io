@@ -455,7 +455,7 @@ async function init() {
       let maxCounter = 0;
       for (const item of items) {
         const id = String(item?.entity?.id || "").trim();
-        const match = /-entity-(\d+)$/i.exec(id);
+        const match = /(?:-entity-|_)(\d+)$/i.exec(id);
         if (!match) {
           continue;
         }
@@ -731,6 +731,9 @@ async function init() {
       return {
         id,
         name,
+        assetClass: String(asset?.assetClass || "").trim(),
+        componentRole: String(asset?.componentRole || "").trim(),
+        parentUnitId: String(asset?.parentUnitId || "").trim(),
         type,
         HVA_value: Number(asset?.HVA_value) || 1,
         center,
@@ -816,6 +819,9 @@ async function init() {
       return {
         id,
         name,
+        assetClass: "protectedAsset",
+        componentRole: "",
+        parentUnitId: "",
         type,
         HVA_value: Number(region?.hvaValue) || 1,
         center,
@@ -843,6 +849,24 @@ async function init() {
       };
     }
 
+    function getTargetClassLabel(asset) {
+      const assetClass = String(asset?.assetClass || "").trim();
+      if (assetClass === "launcher") {
+        return "Lançer";
+      }
+      if (assetClass === "hssRadar") {
+        return "HSS Radar";
+      }
+      if (assetClass === "eirsRadar") {
+        return "EİRS";
+      }
+      return "Korunacak Varlık";
+    }
+
+    function formatTargetOptionLabel(asset) {
+      return `[${getTargetClassLabel(asset)}] ${asset.id} - ${asset.name} | HVA ${asset.HVA_value ?? "-"} | (${round(asset.center?.x || 0, 1)}, ${round(asset.center?.y || 0, 1)})`;
+    }
+
     function populateDefendedAssetSelect(select, currentId, placeholder) {
       if (!select) {
         return;
@@ -855,7 +879,7 @@ async function init() {
       for (const asset of state.sharedDefendedAssets) {
         const option = document.createElement("option");
         option.value = asset.id;
-        option.textContent = `${asset.id} - ${asset.name} | HVA ${asset.HVA_value ?? "-"} | (${round(asset.center?.x || 0, 1)}, ${round(asset.center?.y || 0, 1)})`;
+        option.textContent = formatTargetOptionLabel(asset);
         select.appendChild(option);
       }
       select.value = currentId || "";
@@ -875,7 +899,7 @@ async function init() {
       for (const asset of state.sharedDefendedAssets) {
         const option = document.createElement("option");
         option.value = `asset:${asset.id}`;
-        option.textContent = `${asset.id} - ${asset.name} | HVA ${asset.HVA_value ?? "-"} | (${round(asset.center?.x || 0, 1)}, ${round(asset.center?.y || 0, 1)})`;
+        option.textContent = formatTargetOptionLabel(asset);
         select.appendChild(option);
       }
 
@@ -896,7 +920,7 @@ async function init() {
       for (const asset of state.sharedDefendedAssets) {
         refs.ballisticImpactSelect.appendChild(
           new Option(
-            `${asset.id} - ${asset.name} | HVA ${asset.HVA_value ?? "-"} | (${round(asset.center?.x || 0, 1)}, ${round(asset.center?.y || 0, 1)})`,
+            formatTargetOptionLabel(asset),
             `asset:${asset.id}`
           )
         );
@@ -934,7 +958,7 @@ async function init() {
       for (const asset of state.sharedDefendedAssets) {
         const option = document.createElement("option");
         option.value = `asset:${asset.id}`;
-        option.textContent = `${asset.id} - ${asset.name} | HVA ${asset.HVA_value ?? "-"} | (${round(asset.center?.x || 0, 1)}, ${round(asset.center?.y || 0, 1)})`;
+        option.textContent = formatTargetOptionLabel(asset);
         refs.payloadTargetSelect.appendChild(option);
       }
 
@@ -982,6 +1006,30 @@ async function init() {
     function getWeaponLabel(weaponId) {
       const weapon = state.weapons.find((w) => w.id === weaponId);
       return weapon ? `${weapon.id} - ${weapon.model} (${normalizePayloadCategory(weapon.category)})` : weaponId || "-";
+    }
+
+    function buildPayloadInstanceId(payloadRows, index) {
+      const row = payloadRows[index] || {};
+      const weaponId = String(row.weaponId || "WP").trim();
+      let occurrence = 0;
+      for (let i = 0; i <= index; i += 1) {
+        if (String(payloadRows[i]?.weaponId || "").trim() === weaponId) {
+          occurrence += 1;
+        }
+      }
+      return `${weaponId}_${String(Math.max(1, occurrence)).padStart(2, "0")}`;
+    }
+
+    function getWeaponCatalogIdFromPayload(payload) {
+      const rawId = String(payload?.weaponId || payload?.catalogId || payload?.id || "").trim();
+      if (state.weapons.some((weapon) => weapon.id === rawId)) {
+        return rawId;
+      }
+      const indexedMatch = /^(.+?)_\d+$/i.exec(rawId);
+      if (indexedMatch && state.weapons.some((weapon) => weapon.id === indexedMatch[1])) {
+        return indexedMatch[1];
+      }
+      return rawId;
     }
 
     function createPayloadRow() {
@@ -2320,9 +2368,12 @@ async function init() {
     function buildTargetDefinition(source, point, pointKey = "targetPoint") {
       const mode = String(source?.mode || "manual");
       const defendedAssetId = String(source?.defendedAssetId || "").trim() || null;
+      const asset = mode === "defendedAsset" && defendedAssetId ? getDefendedAssetById(defendedAssetId) : null;
       return {
         mode,
         defendedAssetId: mode === "defendedAsset" ? defendedAssetId : null,
+        targetClass: asset?.assetClass || null,
+        targetName: asset?.name || null,
         [pointKey]: point ? [round(point.x, 3), round(point.y, 3)] : null
       };
     }
@@ -2432,7 +2483,7 @@ async function init() {
       }));
 
       const entity = {
-        id: String(existingEntityId || `${state.selectedPlatform.id}-entity-${entityNo}`),
+        id: String(existingEntityId || `${state.selectedPlatform.id}_${entityNo}`),
         entityType: "KinematicTarget",
         category: state.selectedPlatform.category,
         model: state.selectedPlatform.model,
@@ -2458,7 +2509,7 @@ async function init() {
           const releaseRow = timeline.info.releaseRows?.[i];
           const releaseAltitude = round(releaseRow?.releaseProjection?.altitude ?? start.altitude ?? 0, 3);
           return {
-            id: weapon.id,
+            id: buildPayloadInstanceId(state.payloadRows, i),
             category: normalizePayloadCategory(weapon.category),
             model: weapon.model,
             rcs: Number(weapon.defaultRCS),
@@ -2539,7 +2590,7 @@ async function init() {
       const impactTot = Number(timing.impactTot);
       const entityNo = String(state.ballisticEntityCounter).padStart(2, "0");
       const entity = {
-        id: `${b.id}-entity-${entityNo}`,
+        id: `${b.id}_${entityNo}`,
         entityType: "BallisticTarget",
         launchTime: Math.max(0, launchTime),
         impactTime: Math.max(0, impactTot),
@@ -2576,7 +2627,7 @@ async function init() {
 
     function findPlatformForKinematicEntity(entity) {
       const entityId = String(entity?.id || "").trim();
-      const baseIdMatch = entityId.match(/^(.+)-entity-\d+$/i);
+      const baseIdMatch = entityId.match(/^(.+?)(?:-entity-|_)\d+$/i);
       const baseId = baseIdMatch ? baseIdMatch[1] : "";
       return state.platforms.find((item) => item.id === baseId) ||
         state.platforms.find((item) =>
@@ -2652,7 +2703,7 @@ async function init() {
           : 0;
 
         return {
-          weaponId: String(payload?.id || "").trim(),
+          weaponId: getWeaponCatalogIdFromPayload(payload),
           targetTot: Number.isFinite(Number(payload?.targetTot)) ? round(Number(payload.targetTot), 2) : null,
           releaseTime: Number.isFinite(releaseAbs) ? round(releaseAbs, 2) : null,
           weaponFlightTime: null,
@@ -3159,13 +3210,14 @@ async function init() {
         const isSelected =
           state.attackTargetSource.mode === "defendedAsset" &&
           state.attackTargetSource.defendedAssetId === asset.id;
+        const isLauncher = String(asset?.assetClass || "") === "launcher";
 
         ctx.beginPath();
-        ctx.fillStyle = isSelected ? "#ffd166" : "#7bdff6";
-        ctx.arc(point.x, point.y, pxToWorld(isSelected ? 6 : 4), 0, Math.PI * 2);
+        ctx.fillStyle = isSelected ? "#ffd166" : isLauncher ? "#ff9a7d" : "#7bdff6";
+        ctx.arc(point.x, point.y, pxToWorld(isSelected ? 6 : isLauncher ? 5 : 4), 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = isSelected ? "#ffe3a3" : "#bff5ff";
+        ctx.fillStyle = isSelected ? "#ffe3a3" : isLauncher ? "#ffc8b8" : "#bff5ff";
         ctx.font = `${pxToWorld(11)}px Space Grotesk`;
         drawWorldLabel(`${asset.id}`, point.x + pxToWorld(7), point.y - pxToWorld(6));
       }

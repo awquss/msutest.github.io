@@ -265,7 +265,7 @@
     },
     "entities": [
       {
-        "id": "PLT-entity-01",
+        "id": "KT02_01",
         "entityType": "KinematicTarget",
         "category": "Aircraft",
         "model": "F16",
@@ -306,7 +306,7 @@
         "payload": []
       },
       {
-        "id": "BAL-entity-01",
+        "id": "BM01_01",
         "entityType": "BallisticTarget",
         "launchTime": 120,
         "impactTime": 420,

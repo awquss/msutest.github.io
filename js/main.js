@@ -1698,6 +1698,7 @@ function buildSharedDefendedAssetsPayload() {
     return {
       id: region.id,
       name: region.name,
+      assetClass: String(region.id || "").toUpperCase().startsWith("E") ? "eirsRadar" : "protectedAsset",
       type: region.type,
       HVA_value: Math.max(1, Math.min(10, Math.round(numberOrZero(region.hvaValue) || 1))),
       center: {
@@ -1719,13 +1720,17 @@ function buildSharedDefendedAssetsPayload() {
 
     for (const unit of preview.units) {
       const assignmentToken = sanitizeSystemCode(unit.assignmentId || unit.munitionCode || "ASSIGN");
+      const unitId = `${unit.planId}_${sanitizeSystemCode(unit.code)}_${assignmentToken}${String(unit.sequence).padStart(2, "0")}`;
       const radarCenter = {
         x: Math.round(numberOrZero(unit.components?.radar?.x)),
         y: Math.round(numberOrZero(unit.components?.radar?.y))
       };
       assets.push({
-        id: `${unit.planId}_${sanitizeSystemCode(unit.code)}_${assignmentToken}${String(unit.sequence).padStart(2, "0")}_RADAR`,
+        id: `${unitId}.Radar`,
         name: `${unit.regionName} | ${getDeploymentUnitLabel(unit)} Radar`,
+        assetClass: "hssRadar",
+        componentRole: "radar",
+        parentUnitId: unitId,
         type: "point",
         HVA_value: Math.max(1, Math.min(10, Math.round(numberOrZero(unit.componentSpec?.radarHVAValue) || 1))),
         center: radarCenter,
@@ -1744,8 +1749,11 @@ function buildSharedDefendedAssetsPayload() {
           ? ` (${getMunitionShortLabel(loadoutRow.munitionCode)})`
           : "";
         assets.push({
-          id: `${unit.planId}_${sanitizeSystemCode(unit.code)}_${assignmentToken}${String(unit.sequence).padStart(2, "0")}_FFS${index + 1}`,
-          name: `${unit.regionName} | ${getDeploymentUnitLabel(unit)} FFS-${index + 1}${munitionLabel}`,
+          id: `${unitId}.FFS${index + 1}`,
+          name: `${unit.regionName} | ${getDeploymentUnitLabel(unit)} Lançer-${index + 1}${munitionLabel}`,
+          assetClass: "launcher",
+          componentRole: "ffs",
+          parentUnitId: unitId,
           type: "point",
           HVA_value: 1,
           center: ffsCenter,
