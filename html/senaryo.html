@@ -4,6 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSÜ Senaryo Planlama Web Arayüzü</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../vendor/three/build/three.module.js",
+        "three/addons/": "../vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+  <script src="../vendor/geotiff/geotiff.js"></script>
   <style>
     @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600&display=swap");
 
@@ -273,6 +282,33 @@
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
+    .coverage-altitude-group {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .coverage-altitude-item {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid var(--line-soft);
+      background: #0f1a15;
+      padding: 5px 6px;
+      min-height: 28px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .coverage-altitude-item input {
+      width: 13px;
+      height: 13px;
+      accent-color: var(--accent);
+    }
+
     .radio-item {
       display: flex;
       align-items: center;
@@ -438,6 +474,43 @@
       overflow: hidden;
     }
 
+    .terrain-controls {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(150px, 0.7fr);
+      gap: 8px;
+      align-items: end;
+      margin-top: 8px;
+    }
+
+    .terrain-controls button {
+      min-height: 42px;
+    }
+
+    .terrain-viewport {
+      width: 100%;
+      aspect-ratio: 90 / 49;
+      min-height: 360px;
+      background: #07110d;
+      cursor: grab;
+    }
+
+    .terrain-viewport:active {
+      cursor: grabbing;
+    }
+
+    .terrain-viewport[hidden],
+    .map-wrap.terrain-ready #sharedMapCanvas,
+    .map-wrap.terrain-ready .dpad {
+      display: none !important;
+    }
+
+    .terrain-viewport canvas {
+      width: 100% !important;
+      height: 100% !important;
+      cursor: grab;
+      background: #07110d;
+    }
+
     .dpad {
       position: absolute;
       right: 14px;
@@ -532,8 +605,9 @@
     .deployment-inline-actions {
       display: flex;
       gap: 6px;
-      flex-wrap: wrap;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
+      min-width: 150px;
     }
 
     .deployment-assignment-list {
@@ -729,6 +803,8 @@
       .row,
       .radio-group,
       .layer-grid,
+      .coverage-altitude-group,
+      .terrain-controls,
       .map-tool-row,
       .tab-nav,
       .blind-sector-row {
@@ -842,6 +918,7 @@
                   <th>#</th>
                   <th>X</th>
                   <th>Y</th>
+                  <th>Z</th>
                   <th>İşlem</th>
                 </tr>
               </thead>
@@ -911,6 +988,7 @@
                   <th>#</th>
                   <th>X</th>
                   <th>Y</th>
+                  <th>Z</th>
                   <th>İşlem</th>
                 </tr>
               </thead>
@@ -1092,11 +1170,32 @@
             <span>Max Konuşlanma Kriteri</span>
           </label>
         </div>
+        <div class="coverage-altitude-group" aria-label="Kaplama irtifası">
+          <label class="coverage-altitude-item">
+            <input name="coverageAltitudeFt" type="radio" value="500" checked>
+            <span>500 feet</span>
+          </label>
+          <label class="coverage-altitude-item">
+            <input name="coverageAltitudeFt" type="radio" value="1000">
+            <span>1000 feet</span>
+          </label>
+          <label class="coverage-altitude-item">
+            <input name="coverageAltitudeFt" type="radio" value="5000">
+            <span>5000 feet</span>
+          </label>
+          <label class="coverage-altitude-item">
+            <input name="coverageAltitudeFt" type="radio" value="10000">
+            <span>10000 feet</span>
+          </label>
+        </div>
       </div>
     </div>
 
+    <div id="terrainStatus" class="hint" style="margin-top: 6px;">Harita yükleniyor.</div>
+
     <div class="map-wrap" style="margin-top: 8px;">
       <canvas id="sharedMapCanvas" width="1800" height="980" aria-label="Harekât Haritası"></canvas>
+      <div id="terrainViewport" class="terrain-viewport" hidden aria-label="3B Arazi Haritası"></div>
       <div class="dpad" aria-label="Harita Pan Kontrolleri">
         <span class="empty"></span>
         <button id="panUpBtn" class="ghost" type="button" title="Yukarı">▲</button>

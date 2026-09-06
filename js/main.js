@@ -8,6 +8,19 @@ import {
 const DATA_ROOT_URL = new URL("../data/", import.meta.url);
 const HSS_DATA_URL = new URL("HSS/", DATA_ROOT_URL);
 const THREAT_DATA_URL = new URL("tehdit/", DATA_ROOT_URL);
+const DEFAULT_TERRAIN_PATH = "terrain/output_hh.terrain.json";
+const SOURCE_TERRAIN_TIFF_PATH = "terrain/output_hh.tif";
+const SOURCE_TERRAIN_TILE_PATH = "terrain/output_hh_tiles";
+const SOURCE_TERRAIN_TILE_SIZE = 256;
+const SOURCE_TERRAIN_TILE_MAX_ZOOM = 7;
+const LOS_ANGULAR_STEP_DEG = 3;
+const LOS_RADIAL_SAMPLES = 48;
+const LOS_RADAR_SOURCE_HEIGHT_M = 10;
+const LOS_WEZ_SOURCE_HEIGHT_M = 3;
+const DEFAULT_COVERAGE_ALTITUDE_FT = 500;
+const FEET_TO_METERS = 0.3048;
+const LOS_CLEARANCE_M = 0;
+const LOS_EFFECTIVE_EARTH_RADIUS_M = 6371000 * (4 / 3);
 
 const MAP_SCALE_METERS_PER_PIXEL = 100;
 const DEFAULT_ZOOM = 0.5;
@@ -58,6 +71,19 @@ const state = {
   eirsZoom: DEFAULT_ZOOM,
   eirsPanX: 0,
   eirsPanY: 0,
+  mapDisplayMode: "2d",
+  terrain: null,
+  terrainModule: null,
+  terrainViewer: null,
+  terrainRasterCanvas: null,
+  terrainTileCache: new Map(),
+  losCoverageCache: new Map(),
+  terrainSource: {
+    tiff: null,
+    image: null,
+    openPromise: null
+  },
+  terrainStatusMode: "info",
 
   availableSystems: [],
   systemCatalogByCode: {},
@@ -87,6 +113,7 @@ const state = {
     minCriteria: false,
     maxCriteria: false
   },
+  coverageTargetAltitudeFt: DEFAULT_COVERAGE_ALTITUDE_FT,
   deploymentView: {
     baseBounds: null,
     zoom: 1,
@@ -94,6 +121,12 @@ const state = {
     panY: 0,
     selectedUnitKey: null,
     lastRender: null
+  },
+  alternativeDeploymentMode: {
+    planId: "",
+    regionId: "",
+    assignmentId: "",
+    systemCode: ""
   },
   componentEditor: {
     open: false,
@@ -107,6 +140,8 @@ const state = {
     constraints: null,
     layout: null,
     defaultLayout: null,
+    layoutScope: "unit",
+    alternativeContext: null,
     dragTarget: null,
     blindTarget: "radar",
     viewScale: 1,
@@ -133,6 +168,13 @@ const refs = {
   sharedMapTitle: document.getElementById("sharedMapTitle"),
   sharedMapHint: document.getElementById("sharedMapHint"),
   sharedMapInfo: document.getElementById("sharedMapInfo"),
+  mapDisplayMode: document.getElementById("mapDisplayMode"),
+  terrainFileInput: document.getElementById("terrainFileInput"),
+  loadDefaultTerrainBtn: document.getElementById("loadDefaultTerrainBtn"),
+  loadSampleTerrainBtn: document.getElementById("loadSampleTerrainBtn"),
+  clearTerrainBtn: document.getElementById("clearTerrainBtn"),
+  terrainStatus: document.getElementById("terrainStatus"),
+  terrainViewport: document.getElementById("terrainViewport"),
   sharedLayerControls: document.getElementById("sharedLayerControls"),
   sharedThreatActions: document.getElementById("sharedThreatActions"),
   sharedThreatPointCard: document.getElementById("sharedThreatPointCard"),
@@ -205,6 +247,7 @@ const refs = {
   layerWezChk: document.getElementById("layerWezChk"),
   layerMinRangeChk: document.getElementById("layerMinRangeChk"),
   layerMaxRangeChk: document.getElementById("layerMaxRangeChk"),
+  coverageAltitudeRadios: Array.from(document.querySelectorAll("input[name='coverageAltitudeFt']")),
   deploymentPanLeftBtn: document.getElementById("panLeftBtn"),
   deploymentPanRightBtn: document.getElementById("panRightBtn"),
   deploymentPanUpBtn: document.getElementById("panUpBtn"),
@@ -274,8 +317,11 @@ async function init() {
   loadPersistedRegionsState();
   loadPersistedEirsState();
   await loadDefenseData();
+  await loadDefaultTerrain({ fallbackToSample: false });
+  hydrateStoredTerrainPoints();
   applyImportedScenarioIfPresent();
   await preloadThreatCatalogs();
+  syncCoverageAltitudeFromControls();
   onCoverageLayerChange();
   syncSharedDefendedAssetsStorage();
   setStatus("Adımları sırayla tamamlayın.", "info");
@@ -313,6 +359,11 @@ function bindEvents() {
   refs.zoomOutBtn.addEventListener("click", () => onSharedZoom(0.8));
   refs.zoomResetBtn.addEventListener("click", onSharedZoomReset);
   refs.defenseCanvas.addEventListener("wheel", onSharedCanvasWheel, { passive: false });
+  refs.mapDisplayMode?.addEventListener("change", onMapDisplayModeChange);
+  refs.terrainFileInput?.addEventListener("change", onTerrainFileInputChange);
+  refs.loadDefaultTerrainBtn?.addEventListener("click", () => loadDefaultTerrain({ fallbackToSample: false }));
+  refs.loadSampleTerrainBtn?.addEventListener("click", loadSampleTerrain);
+  refs.clearTerrainBtn?.addEventListener("click", clearTerrain);
 
   refs.threatDirectionSelect.addEventListener("change", onThreatDirectionChange);
   refs.defendedRegionSelect.addEventListener("change", onDeploymentRegionChange);
@@ -322,6 +373,9 @@ function bindEvents() {
   refs.layerWezChk.addEventListener("change", onCoverageLayerChange);
   refs.layerMinRangeChk.addEventListener("change", onCoverageLayerChange);
   refs.layerMaxRangeChk.addEventListener("change", onCoverageLayerChange);
+  for (const radio of refs.coverageAltitudeRadios) {
+    radio.addEventListener("change", onCoverageAltitudeChange);
+  }
   refs.deploymentAssignmentSaveBtn.addEventListener("click", saveDeploymentAssignmentFromModal);
   refs.deploymentAssignmentCancelBtn.addEventListener("click", closeDeploymentAssignmentModal);
   refs.deploymentAssignmentCloseBtn.addEventListener("click", closeDeploymentAssignmentModal);
@@ -367,13 +421,845 @@ function bindEvents() {
   window.addEventListener("mouseup", onComponentEditorMouseUp);
 }
 
-function onSharedCanvasClick(event) {
+async function onMapDisplayModeChange() {
+  state.mapDisplayMode = refs.mapDisplayMode?.value === "3d" ? "3d" : "2d";
+  if (state.mapDisplayMode === "3d" && !state.terrain) {
+    await loadDefaultTerrain({ fallbackToSample: true });
+    return;
+  }
+  await syncTerrainViewMode();
+  renderSharedMapForActiveTab();
+}
+
+async function onTerrainFileInputChange(event) {
+  const file = event.target?.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  setTerrainStatus(`Arazi yukleniyor: ${file.name}`, "info");
+  try {
+    const raw = JSON.parse(await file.text());
+    const terrainModule = await ensureTerrainModule();
+    const terrain = terrainModule.normalizeTerrain({ ...raw, fileName: file.name });
+    await setActiveTerrain(
+      terrain,
+      `Arazi yuklendi: ${terrain.name} | ${terrain.width}x${terrain.height} | ${terrain.minElevationM}-${terrain.maxElevationM} m`
+    );
+  } catch (error) {
+    console.error("Terrain load failed", error);
+    setTerrainStatus(`Arazi yuklenemedi: ${error?.message || "JSON okunamadi"}`, "warn");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+async function loadSampleTerrain() {
+  try {
+    const terrainModule = await ensureTerrainModule();
+    const terrain = terrainModule.createSampleTerrain();
+    await setActiveTerrain(
+      terrain,
+      `Ornek arazi hazir: ${terrain.width}x${terrain.height} | ${terrain.minElevationM}-${terrain.maxElevationM} m`
+    );
+  } catch (error) {
+    console.error("Sample terrain failed", error);
+    setTerrainStatus(`3B arazi baslatilamadi: ${error?.message || "Three.js yuklenemedi"}`, "warn");
+  }
+}
+
+async function loadDefaultTerrain({ fallbackToSample = false } = {}) {
+  setTerrainStatus("Harita yukleniyor.", "info");
+  try {
+    const response = await fetch(`${buildDataUrl(DEFAULT_TERRAIN_PATH)}?v=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const raw = await response.json();
+    const terrainModule = await ensureTerrainModule();
+    const terrain = terrainModule.normalizeTerrain(raw);
+    await setActiveTerrain(terrain, "Harita hazir.");
+  } catch (error) {
+    console.error("Default terrain load failed", error);
+    if (fallbackToSample) {
+      await loadSampleTerrain();
+      return;
+    }
+    setTerrainStatus(`Harita yuklenemedi: ${error?.message || "terrain JSON okunamadi"}`, "warn");
+    await syncTerrainViewMode();
+    renderSharedMapForActiveTab();
+  }
+}
+
+function clearTerrain() {
+  state.terrain = null;
+  state.terrainRasterCanvas = null;
+  state.losCoverageCache.clear();
+  state.mapDisplayMode = "2d";
+  if (refs.mapDisplayMode) {
+    refs.mapDisplayMode.value = "2d";
+  }
+  state.terrainViewer?.setTerrain(null);
+  setTerrainStatus("Arazi: veri yok", "info");
+  syncTerrainViewMode();
+  renderSharedMapForActiveTab();
+  syncDefenseJsonView();
+}
+
+async function setActiveTerrain(terrain, message) {
+  state.terrain = terrain;
+  state.terrainRasterCanvas = null;
+  state.terrainTileCache.clear();
+  state.losCoverageCache.clear();
+  state.mapDisplayMode = "2d";
+  fitMainMapToTerrain();
+  if (refs.mapDisplayMode) {
+    refs.mapDisplayMode.value = "2d";
+  }
+  setTerrainStatus(message, "info");
+  await syncTerrainViewMode();
+  syncDefenseJsonView();
+}
+
+async function ensureTerrainModule() {
+  if (!state.terrainModule) {
+    state.terrainModule = await import("./terrain-viewer.js?v=20260407");
+  }
+  return state.terrainModule;
+}
+
+async function ensureTerrainViewer() {
+  if (state.terrainViewer || !refs.terrainViewport) {
+    return state.terrainViewer;
+  }
+  const terrainModule = await ensureTerrainModule();
+  state.terrainViewer = new terrainModule.TerrainViewer(refs.terrainViewport);
+  state.terrainViewer.onTerrainPoint = onTerrainPointSelected;
+  return state.terrainViewer;
+}
+
+async function onTerrainPointSelected(rawPoint) {
+  const point = normalizeTerrainPoint(rawPoint);
+  if (!point) {
+    return;
+  }
+
   if (state.activeTab === "areas") {
-    onCanvasClick(event);
+    await addDefenseDraftPoint(point);
   } else if (state.activeTab === "eirs") {
-    onEirsCanvasClick(event);
+    await setEirsDraftPoint(point);
   } else if (state.activeTab === "deployment") {
-    onDeploymentCanvasClick(event);
+    if (isAlternativeDeploymentSelectionActive()) {
+      addAlternativeDeploymentPoint(point);
+    } else {
+      selectDeploymentUnitFromTerrainPoint(point);
+    }
+  } else if (state.activeTab === "threat") {
+    sendTerrainPointToThreatPlanner(point);
+  }
+}
+
+function normalizeTerrainPoint(rawPoint) {
+  if (!rawPoint) {
+    return null;
+  }
+  const x = Math.round(numberOrZero(rawPoint.x));
+  const y = Math.round(numberOrZero(rawPoint.y));
+  const z = Math.round(numberOrZero(rawPoint.z ?? rawPoint.elevationM ?? sampleTerrainElevation(x, y)));
+  const point = { x, y, z };
+  if (rawPoint.geo?.lat !== undefined && rawPoint.geo?.lon !== undefined) {
+    point.lat = Number(rawPoint.geo.lat);
+    point.lon = Number(rawPoint.geo.lon);
+  } else {
+    const geo = localPointToGeo(x, y);
+    if (geo) {
+      point.lat = geo.lat;
+      point.lon = geo.lon;
+    }
+  }
+  return point;
+}
+
+function selectDeploymentUnitFromTerrainPoint(point) {
+  const previews = getVisibleDeploymentPreviews();
+  const alternatives = getAlternativeEditorTargetsForPreviews(previews);
+  let nearestAlternative = null;
+  for (const target of alternatives) {
+    const dist = Math.hypot(numberOrZero(target.position.x) - point.x, numberOrZero(target.position.y) - point.y);
+    if (!nearestAlternative || dist < nearestAlternative.dist) {
+      nearestAlternative = { ...target, dist };
+    }
+  }
+  if (nearestAlternative && nearestAlternative.dist <= 2500) {
+    state.deploymentView.selectedUnitKey = nearestAlternative.key;
+    setDeploymentStatus(`${nearestAlternative.assignment.code} ${nearestAlternative.alternativeId} alternatif konuş yeri seçildi.`, "info");
+    renderDeploymentMap();
+    openAlternativeComponentEditor(nearestAlternative);
+    return;
+  }
+
+  const units = previews.flatMap((preview) => preview.units || []);
+  if (!units.length) {
+    setDeploymentStatus(
+      `Arazi noktasi: (${formatPoint3(point)}). Konuşlandırma kaydedildiğinde HSS markerları burada seçilebilir.`,
+      "info"
+    );
+    return;
+  }
+
+  let nearest = null;
+  for (const unit of units) {
+    const dist = Math.hypot(numberOrZero(unit.x) - point.x, numberOrZero(unit.y) - point.y);
+    if (!nearest || dist < nearest.dist) {
+      nearest = { unit, dist };
+    }
+  }
+
+  if (!nearest || nearest.dist > 2500) {
+    state.deploymentView.selectedUnitKey = null;
+    setDeploymentStatus(`Arazi noktasi: (${formatPoint3(point)}). HSS seçmek için marker yakınına tıklayın.`, "info");
+    renderDeploymentMap();
+    return;
+  }
+
+  state.deploymentView.selectedUnitKey = nearest.unit.key;
+  setDeploymentStatus(`${getDeploymentUnitLabel(nearest.unit)} seçildi. Arazi kotu: ${point.z} m`, "info");
+  renderDeploymentMap();
+  openComponentEditor(nearest.unit);
+}
+
+function sendTerrainPointToThreatPlanner(point) {
+  try {
+    const handled = refs.threatPlanningFrame?.contentWindow?.handleSharedTerrainPoint?.(point);
+    if (handled) {
+      return;
+    }
+  } catch (_err) {
+    // Ignore iframe bridge errors.
+  }
+  setStatus(`Tehdit harita noktasi: (${formatPoint3(point)})`, "info");
+}
+
+async function syncTerrainViewMode() {
+  const mapWrap = refs.sharedMapCanvas?.closest(".map-wrap");
+  if (mapWrap) {
+    mapWrap.classList.remove("terrain-active");
+    mapWrap.classList.remove("terrain-ready");
+  }
+  if (refs.terrainViewport) {
+    refs.terrainViewport.hidden = true;
+  }
+}
+
+function syncTerrainScene() {
+  if (state.mapDisplayMode !== "3d" || !state.terrainViewer || !state.terrain) {
+    return;
+  }
+  state.terrainViewer.setSceneData(buildTerrainSceneData());
+}
+
+function setTerrainStatus(message, mode = "info") {
+  state.terrainStatusMode = mode;
+  if (!refs.terrainStatus) {
+    return;
+  }
+  refs.terrainStatus.textContent = message;
+  refs.terrainStatus.style.color = mode === "warn" ? "#ffd1b5" : "";
+}
+
+function buildTerrainSceneData() {
+  const assets = [];
+  for (const region of getAllProtectedAssets()) {
+    assets.push(buildTerrainAsset(region));
+  }
+  if (state.draft) {
+    assets.push(buildTerrainAsset({ ...state.draft, id: "draft", name: "Taslak", assetClass: "draft" }));
+  }
+  if (state.eirsDraft) {
+    assets.push(buildTerrainAsset({ ...state.eirsDraft, id: "eirsDraft", name: "EIRS Taslak", assetClass: "eirsRadar" }));
+  }
+
+  const previews = getVisibleDeploymentPreviews();
+  const units = [];
+  const coverageRings = [];
+
+  for (const preview of previews) {
+    for (const unit of preview.units) {
+      units.push(buildTerrainUnit(unit));
+      for (const coverage of getCoverageItemsForUnit(unit)) {
+        coverageRings.push({
+          x: coverage.cx,
+          y: coverage.cy,
+          radiusM: coverage.radiusM,
+          type: coverage.type,
+          color: coverage.type === "radar" ? unit.color : "#ffb27d",
+          footprint: shouldUseLineOfSightCoverage()
+            ? getLineOfSightCoverageRings(coverage, coverage.radiusM, coverage.blindSectors)
+            : null
+        });
+      }
+    }
+  }
+
+  if (state.coverageLayers.radar) {
+    for (const eirs of state.savedEirs) {
+      const point = eirs.points?.[0];
+      if (point) {
+        coverageRings.push({
+          x: point.x,
+          y: point.y,
+          radiusM: getEirsRadarRangeMeters(),
+          type: "radar",
+          color: "#7fd8ff",
+          footprint: shouldUseLineOfSightCoverage()
+            ? getLineOfSightCoverageRings(
+                {
+                  cx: point.x,
+                  cy: point.y,
+                  sourceHeightM: LOS_RADAR_SOURCE_HEIGHT_M,
+                  targetHeightM: getCoverageTargetAltitudeMeters(),
+                  blindSectors: []
+                },
+                getEirsRadarRangeMeters(),
+                []
+              )
+            : null
+        });
+      }
+    }
+  }
+
+  return { assets, units, coverageRings };
+}
+
+function buildTerrainAsset(region) {
+  const points = Array.isArray(region?.points)
+    ? region.points.map((point) => enrichPointWithTerrain(point))
+    : [];
+  const center = computeRegionCenter({ ...region, points });
+  return {
+    id: String(region?.id || ""),
+    name: String(region?.name || region?.id || "Varlik"),
+    assetClass: String(region?.assetClass || "").trim() ||
+      (String(region?.id || "").toUpperCase().startsWith("E") ? "eirsRadar" : "protectedAsset"),
+    type: region?.type === "area" ? "area" : "point",
+    center,
+    points
+  };
+}
+
+function buildTerrainUnit(unit) {
+  return {
+    key: unit.key,
+    code: unit.code,
+    label: getDeploymentUnitLabel(unit),
+    color: unit.color,
+    x: numberOrZero(unit.x),
+    y: numberOrZero(unit.y),
+    components: unit.components
+  };
+}
+
+function sampleTerrainElevation(x, y) {
+  const terrain = state.terrain;
+  if (!terrain?.elevations?.length) {
+    return 0;
+  }
+  const cellSizeX = numberOrZero(terrain.cellSizeXMeters || terrain.cellSizeMeters || 1) || 1;
+  const cellSizeY = numberOrZero(terrain.cellSizeYMeters || terrain.cellSizeMeters || 1) || 1;
+  const colFloat = (numberOrZero(x) - numberOrZero(terrain.xMin)) / cellSizeX;
+  const rowFloat = terrain.rowsNorthToSouth !== false
+    ? (numberOrZero(terrain.yMax) - numberOrZero(y)) / cellSizeY
+    : (numberOrZero(y) - numberOrZero(terrain.yMin)) / cellSizeY;
+  const col = clampNumber(colFloat, 0, Math.max(0, terrain.width - 1));
+  const row = clampNumber(rowFloat, 0, Math.max(0, terrain.height - 1));
+  const c0 = Math.floor(col);
+  const r0 = Math.floor(row);
+  const c1 = Math.min(terrain.width - 1, c0 + 1);
+  const r1 = Math.min(terrain.height - 1, r0 + 1);
+  const tx = col - c0;
+  const ty = row - r0;
+  const a = numberOrZero(terrain.elevations[r0]?.[c0]);
+  const b = numberOrZero(terrain.elevations[r0]?.[c1]);
+  const c = numberOrZero(terrain.elevations[r1]?.[c0]);
+  const d = numberOrZero(terrain.elevations[r1]?.[c1]);
+  return lerpNumber(lerpNumber(a, b, tx), lerpNumber(c, d, tx), ty);
+}
+
+async function ensureSourceTerrain() {
+  if (state.terrainSource.image) {
+    return state.terrainSource.image;
+  }
+  if (state.terrainSource.openPromise) {
+    return state.terrainSource.openPromise;
+  }
+
+  state.terrainSource.openPromise = (async () => {
+    const geoTiffApi = globalThis.GeoTIFF;
+    if (!geoTiffApi?.fromUrl) {
+      throw new Error("GeoTIFF okuyucu yuklenemedi");
+    }
+    const sourceUrl = buildDataUrl(SOURCE_TERRAIN_TIFF_PATH);
+    const tiff = await geoTiffApi.fromUrl(sourceUrl, { allowFullFile: false, maxRanges: 8 });
+    const image = await tiff.getImage();
+    state.terrainSource.tiff = tiff;
+    state.terrainSource.image = image;
+    return image;
+  })();
+
+  try {
+    return await state.terrainSource.openPromise;
+  } finally {
+    state.terrainSource.openPromise = null;
+  }
+}
+
+async function sampleSourceTerrainElevation(x, y) {
+  const terrain = state.terrain;
+  if (!terrain) {
+    return sampleTerrainElevation(x, y);
+  }
+
+  try {
+    const image = await ensureSourceTerrain();
+    const sourceWidth = image.getWidth?.() || terrain.geo?.sourceRaster?.width || terrain.width;
+    const sourceHeight = image.getHeight?.() || terrain.geo?.sourceRaster?.height || terrain.height;
+    const terrainWidthM = Math.max(1, numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin));
+    const terrainHeightM = Math.max(1, numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin));
+    const pixelX = Math.floor(clampNumber(((numberOrZero(x) - terrain.xMin) / terrainWidthM) * sourceWidth, 0, sourceWidth - 1));
+    const pixelY = Math.floor(clampNumber(((terrain.yMax - numberOrZero(y)) / terrainHeightM) * sourceHeight, 0, sourceHeight - 1));
+    const raster = await image.readRasters({
+      window: [pixelX, pixelY, pixelX + 1, pixelY + 1],
+      width: 1,
+      height: 1,
+      samples: [0]
+    });
+    const value = Number(raster?.[0]?.[0]);
+    return Number.isFinite(value) ? value : sampleTerrainElevation(x, y);
+  } catch (error) {
+    console.warn("Source GeoTIFF elevation sample failed", error);
+    return sampleTerrainElevation(x, y);
+  }
+}
+
+async function enrichPointWithSourceTerrain(point) {
+  const x = Math.round(numberOrZero(point?.x));
+  const y = Math.round(numberOrZero(point?.y));
+  const z = Math.round(await sampleSourceTerrainElevation(x, y));
+  const enriched = { x, y, z };
+  const geo = point?.lat !== undefined && point?.lon !== undefined
+    ? { lat: Number(point.lat), lon: Number(point.lon) }
+    : localPointToGeo(x, y);
+  if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+    enriched.lat = geo.lat;
+    enriched.lon = geo.lon;
+  }
+  return enriched;
+}
+
+function drawTerrainRasterOnContext(targetCtx, targetCanvas, panX, panY, zoom) {
+  const hasSourceTiles = drawSourceTerrainTilesOnContext(targetCtx, targetCanvas, panX, panY, zoom);
+  if (hasSourceTiles) {
+    return true;
+  }
+
+  const terrain = state.terrain;
+  const raster = getTerrainRasterCanvas();
+  if (!terrain || !raster) {
+    return false;
+  }
+
+  const topLeft = worldToScreenForView(targetCanvas, panX, panY, zoom, terrain.xMin, terrain.yMax);
+  const bottomRight = worldToScreenForView(targetCanvas, panX, panY, zoom, terrain.xMax, terrain.yMin);
+  targetCtx.save();
+  targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  targetCtx.fillStyle = "#07110d";
+  targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+  targetCtx.imageSmoothingEnabled = true;
+  targetCtx.drawImage(
+    raster,
+    topLeft.x,
+    topLeft.y,
+    bottomRight.x - topLeft.x,
+    bottomRight.y - topLeft.y
+  );
+  targetCtx.strokeStyle = "rgba(222, 246, 231, 0.34)";
+  targetCtx.lineWidth = 2;
+  targetCtx.strokeRect(
+    topLeft.x,
+    topLeft.y,
+    bottomRight.x - topLeft.x,
+    bottomRight.y - topLeft.y
+  );
+  targetCtx.restore();
+  return true;
+}
+
+function drawTerrainRasterWithMapper(targetCtx, targetCanvas, mapper) {
+  const terrain = state.terrain;
+  const raster = getTerrainRasterCanvas();
+  if (!terrain || !raster || !mapper) {
+    return false;
+  }
+
+  const topLeft = mapper.toScreen(terrain.xMin, terrain.yMax);
+  const bottomRight = mapper.toScreen(terrain.xMax, terrain.yMin);
+  targetCtx.save();
+  targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  targetCtx.fillStyle = "#07110d";
+  targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+  targetCtx.imageSmoothingEnabled = true;
+  targetCtx.drawImage(
+    raster,
+    topLeft.x,
+    topLeft.y,
+    bottomRight.x - topLeft.x,
+    bottomRight.y - topLeft.y
+  );
+  targetCtx.strokeStyle = "rgba(222, 246, 231, 0.34)";
+  targetCtx.lineWidth = 2;
+  targetCtx.strokeRect(
+    topLeft.x,
+    topLeft.y,
+    bottomRight.x - topLeft.x,
+    bottomRight.y - topLeft.y
+  );
+  targetCtx.restore();
+  return true;
+}
+
+function drawSourceTerrainTilesOnContext(targetCtx, targetCanvas, panX, panY, zoom) {
+  const terrain = state.terrain;
+  if (!terrain?.geo?.sourceRaster || !targetCanvas) {
+    return false;
+  }
+
+  const sourceWidth = numberOrZero(terrain.geo.sourceRaster.width);
+  const sourceHeight = numberOrZero(terrain.geo.sourceRaster.height);
+  const terrainWidthM = Math.max(1, numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin));
+  const terrainHeightM = Math.max(1, numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin));
+  if (sourceWidth <= 0 || sourceHeight <= 0 || terrainWidthM <= 0 || terrainHeightM <= 0) {
+    return false;
+  }
+
+  const visible = getVisibleWorldBoundsForView(targetCanvas, panX, panY, zoom);
+  const pxMin = clampNumber(((visible.xMin - terrain.xMin) / terrainWidthM) * sourceWidth, 0, sourceWidth);
+  const pxMax = clampNumber(((visible.xMax - terrain.xMin) / terrainWidthM) * sourceWidth, 0, sourceWidth);
+  const pyMin = clampNumber(((terrain.yMax - visible.yMax) / terrainHeightM) * sourceHeight, 0, sourceHeight);
+  const pyMax = clampNumber(((terrain.yMax - visible.yMin) / terrainHeightM) * sourceHeight, 0, sourceHeight);
+  const zoomLevel = chooseSourceTileZoom(targetCanvas, zoom, terrainWidthM, sourceWidth);
+  const scaleFactor = 2 ** (SOURCE_TERRAIN_TILE_MAX_ZOOM - zoomLevel);
+  const tileNativeSize = SOURCE_TERRAIN_TILE_SIZE * scaleFactor;
+  const tileXMin = Math.max(0, Math.floor(Math.min(pxMin, pxMax) / tileNativeSize));
+  const tileXMax = Math.max(0, Math.floor(Math.max(pxMin, pxMax) / tileNativeSize));
+  const tileYMin = Math.max(0, Math.floor(Math.min(pyMin, pyMax) / tileNativeSize));
+  const tileYMax = Math.max(0, Math.floor(Math.max(pyMin, pyMax) / tileNativeSize));
+
+  targetCtx.save();
+  targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+  targetCtx.fillStyle = "#07110d";
+  targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+
+  let requested = 0;
+  let drawn = 0;
+  for (let tileY = tileYMin; tileY <= tileYMax; tileY += 1) {
+    for (let tileX = tileXMin; tileX <= tileXMax; tileX += 1) {
+      requested += 1;
+      const tile = getSourceTerrainTile(zoomLevel, tileX, tileY);
+      if (!tile?.complete || tile.failed) {
+        continue;
+      }
+
+      const nativeX0 = tileX * tileNativeSize;
+      const nativeY0 = tileY * tileNativeSize;
+      const nativeX1 = Math.min(sourceWidth, nativeX0 + tileNativeSize);
+      const nativeY1 = Math.min(sourceHeight, nativeY0 + tileNativeSize);
+      if (nativeX1 <= nativeX0 || nativeY1 <= nativeY0) {
+        continue;
+      }
+
+      const worldX0 = terrain.xMin + (nativeX0 / sourceWidth) * terrainWidthM;
+      const worldX1 = terrain.xMin + (nativeX1 / sourceWidth) * terrainWidthM;
+      const worldY0 = terrain.yMax - (nativeY0 / sourceHeight) * terrainHeightM;
+      const worldY1 = terrain.yMax - (nativeY1 / sourceHeight) * terrainHeightM;
+      const topLeft = worldToScreenForView(targetCanvas, panX, panY, zoom, worldX0, worldY0);
+      const bottomRight = worldToScreenForView(targetCanvas, panX, panY, zoom, worldX1, worldY1);
+      const srcWidth = SOURCE_TERRAIN_TILE_SIZE * ((nativeX1 - nativeX0) / tileNativeSize);
+      const srcHeight = SOURCE_TERRAIN_TILE_SIZE * ((nativeY1 - nativeY0) / tileNativeSize);
+
+      targetCtx.drawImage(
+        tile.image,
+        0,
+        0,
+        srcWidth,
+        srcHeight,
+        topLeft.x,
+        topLeft.y,
+        bottomRight.x - topLeft.x,
+        bottomRight.y - topLeft.y
+      );
+      drawn += 1;
+    }
+  }
+
+  targetCtx.strokeStyle = "rgba(222, 246, 231, 0.25)";
+  targetCtx.lineWidth = 1;
+  const mapTopLeft = worldToScreenForView(targetCanvas, panX, panY, zoom, terrain.xMin, terrain.yMax);
+  const mapBottomRight = worldToScreenForView(targetCanvas, panX, panY, zoom, terrain.xMax, terrain.yMin);
+  targetCtx.strokeRect(
+    mapTopLeft.x,
+    mapTopLeft.y,
+    mapBottomRight.x - mapTopLeft.x,
+    mapBottomRight.y - mapTopLeft.y
+  );
+  targetCtx.restore();
+  return drawn > 0;
+}
+
+function chooseSourceTileZoom(targetCanvas, zoom, terrainWidthM, sourceWidth) {
+  const mapWidthPx = Math.max(1, terrainWidthM * (numberOrZero(zoom) / MAP_SCALE_METERS_PER_PIXEL));
+  const sourcePixelsPerScreenPixel = Math.max(1, sourceWidth / Math.max(1, mapWidthPx));
+  const zoomLevel = SOURCE_TERRAIN_TILE_MAX_ZOOM - Math.round(Math.log2(sourcePixelsPerScreenPixel));
+  return Math.max(0, Math.min(SOURCE_TERRAIN_TILE_MAX_ZOOM, zoomLevel));
+}
+
+function getSourceTerrainTile(zoomLevel, tileX, tileY) {
+  const key = `${zoomLevel}/${tileX}/${tileY}`;
+  const cached = state.terrainTileCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const image = new Image();
+  const record = { image, complete: false, failed: false };
+  image.onload = () => {
+    record.complete = true;
+    renderSharedMapForActiveTab();
+  };
+  image.onerror = () => {
+    record.failed = true;
+  };
+  image.src = buildDataUrl(`${SOURCE_TERRAIN_TILE_PATH}/${zoomLevel}/${tileX}/${tileY}.png`);
+  state.terrainTileCache.set(key, record);
+  return record;
+}
+
+function getTerrainRasterCanvas() {
+  if (state.terrainRasterCanvas) {
+    return state.terrainRasterCanvas;
+  }
+  const terrain = state.terrain;
+  if (!terrain?.elevations?.length) {
+    return null;
+  }
+
+  const width = terrain.width;
+  const height = terrain.height;
+  const raster = document.createElement("canvas");
+  raster.width = width;
+  raster.height = height;
+  const rasterCtx = raster.getContext("2d");
+  const image = rasterCtx.createImageData(width, height);
+  const min = Number.isFinite(Number(terrain.minElevationM)) ? Number(terrain.minElevationM) : 0;
+  const max = Number.isFinite(Number(terrain.maxElevationM)) ? Number(terrain.maxElevationM) : min + 1;
+  const span = Math.max(1, max - min);
+
+  for (let row = 0; row < height; row += 1) {
+    for (let col = 0; col < width; col += 1) {
+      const z = numberOrZero(terrain.elevations[row]?.[col]);
+      const west = numberOrZero(terrain.elevations[row]?.[Math.max(0, col - 1)] ?? z);
+      const east = numberOrZero(terrain.elevations[row]?.[Math.min(width - 1, col + 1)] ?? z);
+      const north = numberOrZero(terrain.elevations[Math.max(0, row - 1)]?.[col] ?? z);
+      const south = numberOrZero(terrain.elevations[Math.min(height - 1, row + 1)]?.[col] ?? z);
+      const shade = clampNumber(0.76 + ((west - east) + (north - south)) / span, 0.48, 1.15);
+      const color = terrainColor((z - min) / span, z).map((part) => Math.round(clampNumber(part * shade, 0, 255)));
+      const offset = (row * width + col) * 4;
+      image.data[offset] = color[0];
+      image.data[offset + 1] = color[1];
+      image.data[offset + 2] = color[2];
+      image.data[offset + 3] = 255;
+    }
+  }
+
+  rasterCtx.putImageData(image, 0, 0);
+  state.terrainRasterCanvas = raster;
+  return raster;
+}
+
+function terrainColor(normValue, elevationM) {
+  const norm = clampNumber(normValue, 0, 1);
+  if (elevationM < 0) {
+    return mixRgb([30, 74, 86], [69, 125, 130], clampNumber((elevationM + 120) / 120, 0, 1));
+  }
+  if (norm < 0.22) {
+    return mixRgb([58, 109, 82], [104, 146, 88], norm / 0.22);
+  }
+  if (norm < 0.48) {
+    return mixRgb([104, 146, 88], [151, 135, 82], (norm - 0.22) / 0.26);
+  }
+  if (norm < 0.74) {
+    return mixRgb([151, 135, 82], [139, 111, 87], (norm - 0.48) / 0.26);
+  }
+  return mixRgb([139, 111, 87], [232, 230, 214], (norm - 0.74) / 0.26);
+}
+
+function mixRgb(a, b, t) {
+  const ratio = clampNumber(t, 0, 1);
+  return [
+    a[0] + (b[0] - a[0]) * ratio,
+    a[1] + (b[1] - a[1]) * ratio,
+    a[2] + (b[2] - a[2]) * ratio
+  ];
+}
+
+function enrichPointWithTerrain(point) {
+  const x = Math.round(numberOrZero(point?.x));
+  const y = Math.round(numberOrZero(point?.y));
+  const hasStoredZ = Number.isFinite(Number(point?.z ?? point?.elevationM));
+  const z = Math.round(hasStoredZ ? Number(point?.z ?? point?.elevationM) : sampleTerrainElevation(x, y));
+  const enriched = { x, y, z };
+  const geo = point?.lat !== undefined && point?.lon !== undefined
+    ? { lat: Number(point.lat), lon: Number(point.lon) }
+    : localPointToGeo(x, y);
+  if (geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+    enriched.lat = geo.lat;
+    enriched.lon = geo.lon;
+  }
+  return enriched;
+}
+
+function normalizeStoredPoint(point) {
+  const x = Math.round(numberOrZero(point?.x));
+  const y = Math.round(numberOrZero(point?.y));
+  const normalized = { x, y };
+  if (Number.isFinite(Number(point?.z ?? point?.elevationM))) {
+    normalized.z = Math.round(Number(point.z ?? point.elevationM));
+  } else if (state.terrain) {
+    normalized.z = Math.round(sampleTerrainElevation(x, y));
+  }
+  const lat = numberOrNull(point?.lat);
+  const lon = numberOrNull(point?.lon);
+  if (lat !== null && lon !== null) {
+    normalized.lat = lat;
+    normalized.lon = lon;
+  }
+  return normalized;
+}
+
+function normalizeAlternativeRadarPositions(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item) => {
+      const point = normalizeStoredPoint(item);
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return null;
+      }
+      const normalized = { ...point };
+      const id = String(item?.id || "").trim();
+      if (id) {
+        normalized.id = id;
+      }
+      const distanceM = numberOrNull(item?.distanceFromProtectedCenterM);
+      const criteriaMinM = numberOrNull(item?.criteriaMinM);
+      const criteriaMaxM = numberOrNull(item?.criteriaMaxM);
+      if (distanceM !== null) {
+        normalized.distanceFromProtectedCenterM = Math.round(distanceM);
+      }
+      if (criteriaMinM !== null) {
+        normalized.criteriaMinM = Math.round(criteriaMinM);
+      }
+      if (criteriaMaxM !== null) {
+        normalized.criteriaMaxM = Math.round(criteriaMaxM);
+      }
+      if (typeof item?.withinDeploymentCriteria === "boolean") {
+        normalized.withinDeploymentCriteria = item.withinDeploymentCriteria;
+      }
+      if (item?.selectedAt) {
+        normalized.selectedAt = String(item.selectedAt);
+      }
+      return normalized;
+    })
+    .filter(Boolean);
+}
+
+function buildAlternativePositionId(index) {
+  return `ALT${String(Math.max(1, Math.floor(Number(index) || 0) + 1)).padStart(2, "0")}`;
+}
+
+function getAlternativePositionId(point, index) {
+  return String(point?.id || buildAlternativePositionId(index)).trim();
+}
+
+function buildAlternativeComponentLayoutKey(planId, assignmentId, alternativeId) {
+  return `${planId}:${assignmentId}:ALT:${alternativeId}`;
+}
+
+function normalizeAlternativeComponentLayoutsById(raw, componentSpec = null) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [id, layout] of Object.entries(raw)) {
+    const key = String(id || "").trim();
+    if (!key || !layout) {
+      continue;
+    }
+    normalized[key] = normalizeComponentLayout(layout, componentSpec);
+  }
+  return normalized;
+}
+
+function hydrateStoredTerrainPoints() {
+  state.savedRegions = state.savedRegions.map((region) => ({
+    ...region,
+    points: (region.points || []).map((point) => enrichPointWithTerrain(point))
+  }));
+  state.savedEirs = state.savedEirs.map((region) => ({
+    ...region,
+    points: (region.points || []).map((point) => enrichPointWithTerrain(point))
+  }));
+  if (state.draft) {
+    state.draft.points = state.draft.points.map((point) => enrichPointWithTerrain(point));
+  }
+  if (state.eirsDraft) {
+    state.eirsDraft.points = state.eirsDraft.points.map((point) => enrichPointWithTerrain(point));
+  }
+}
+
+function localPointToGeo(x, y) {
+  const center = state.terrain?.geo?.center;
+  const lat = Number(center?.lat);
+  const lon = Number(center?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+  const metersPerDegLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  if (!Number.isFinite(metersPerDegLon) || Math.abs(metersPerDegLon) < 1e-6) {
+    return null;
+  }
+  return {
+    lat: lat + numberOrZero(y) / 111320,
+    lon: lon + numberOrZero(x) / metersPerDegLon
+  };
+}
+
+function formatPoint3(point) {
+  return `${Math.round(numberOrZero(point?.x))}, ${Math.round(numberOrZero(point?.y))}, ${Math.round(numberOrZero(point?.z))} m`;
+}
+
+function lerpNumber(a, b, t) {
+  return a + (b - a) * t;
+}
+
+async function onSharedCanvasClick(event) {
+  if (state.activeTab === "areas") {
+    await onCanvasClick(event);
+  } else if (state.activeTab === "eirs") {
+    await onEirsCanvasClick(event);
+  } else if (state.activeTab === "deployment") {
+    await onDeploymentCanvasClick(event);
   }
 }
 
@@ -408,7 +1294,9 @@ function onSharedPanReset() {
 }
 
 function onSharedZoom(multiplier) {
-  if (state.activeTab === "areas") {
+  if (state.mapDisplayMode === "3d") {
+    state.terrainViewer?.zoomCamera(multiplier);
+  } else if (state.activeTab === "areas") {
     changeZoom(multiplier);
   } else if (state.activeTab === "eirs") {
     changeEirsZoom(multiplier);
@@ -418,7 +1306,9 @@ function onSharedZoom(multiplier) {
 }
 
 function onSharedZoomReset() {
-  if (state.activeTab === "areas") {
+  if (state.mapDisplayMode === "3d") {
+    state.terrainViewer?.resetCamera();
+  } else if (state.activeTab === "areas") {
     setZoom(DEFAULT_ZOOM);
   } else if (state.activeTab === "eirs") {
     setEirsZoom(DEFAULT_ZOOM);
@@ -463,6 +1353,7 @@ function syncSharedMapForActiveTab() {
     refs.sharedThreatBallisticCard.style.display = config.showThreatBallisticTable ? "" : "none";
   }
   refs.sharedMapCanvas.style.cursor = config.cursor || "crosshair";
+  syncTerrainViewMode();
 }
 
 function getSharedMapPresentation(tabName) {
@@ -770,6 +1661,9 @@ function requestTab(tabName) {
   }
 
   state.activeTab = tabName;
+  if (tabName !== "deployment") {
+    clearAlternativeDeploymentSelection();
+  }
   renderTabs();
 
   if (tabName === "deployment") {
@@ -820,6 +1714,26 @@ function onCoverageLayerChange() {
   renderDeploymentMap();
 }
 
+function onCoverageAltitudeChange() {
+  syncCoverageAltitudeFromControls();
+  state.losCoverageCache.clear();
+  syncDefenseJsonView();
+  renderCanvas();
+  renderDeploymentMap();
+}
+
+function syncCoverageAltitudeFromControls() {
+  const selected = refs.coverageAltitudeRadios.find((radio) => radio.checked);
+  const feet = Number(selected?.value);
+  state.coverageTargetAltitudeFt = [500, 1000, 5000, 10000].includes(feet)
+    ? feet
+    : DEFAULT_COVERAGE_ALTITUDE_FT;
+}
+
+function getCoverageTargetAltitudeMeters() {
+  return Math.round(numberOrZero(state.coverageTargetAltitudeFt || DEFAULT_COVERAGE_ALTITUDE_FT) * FEET_TO_METERS);
+}
+
 function onDeploymentCanvasWheel(event) {
   event.preventDefault();
   if (event.deltaY < 0) {
@@ -850,13 +1764,44 @@ function resetDeploymentPan() {
   renderDeploymentMap();
 }
 
-function onDeploymentCanvasClick(event) {
+async function onDeploymentCanvasClick(event) {
   const last = state.deploymentView.lastRender;
-  if (!last || !last.unitScreens?.length) {
+  if (!last) {
+    return;
+  }
+
+  if (isAlternativeDeploymentSelectionActive()) {
+    const screen = getCanvasScreenPoint(deploymentCanvas, event);
+    const nearestAlternative = findNearestDeploymentUnit(screen.x, screen.y, last.alternativeScreens, 16);
+    if (nearestAlternative) {
+      state.deploymentView.selectedUnitKey = nearestAlternative.key;
+      renderDeploymentMap();
+      openAlternativeComponentEditor(nearestAlternative);
+      return;
+    }
+
+    const world = last.mapper?.toWorld?.(screen.x, screen.y);
+    if (!world) {
+      return;
+    }
+    const point = await enrichPointWithSourceTerrain(world);
+    addAlternativeDeploymentPoint(point);
     return;
   }
 
   const screen = getCanvasScreenPoint(deploymentCanvas, event);
+  const nearestAlternative = findNearestDeploymentUnit(screen.x, screen.y, last.alternativeScreens, 16);
+  if (nearestAlternative) {
+    state.deploymentView.selectedUnitKey = nearestAlternative.key;
+    renderDeploymentMap();
+    openAlternativeComponentEditor(nearestAlternative);
+    return;
+  }
+
+  if (!last.unitScreens?.length) {
+    return;
+  }
+
   const nearest = findNearestDeploymentUnit(screen.x, screen.y, last.unitScreens, 16);
   if (!nearest) {
     state.deploymentView.selectedUnitKey = null;
@@ -867,6 +1812,144 @@ function onDeploymentCanvasClick(event) {
   state.deploymentView.selectedUnitKey = nearest.key;
   renderDeploymentMap();
   openComponentEditor(nearest.unit);
+}
+
+function isAlternativeDeploymentSelectionActive(regionId = null, assignmentId = null) {
+  const mode = state.alternativeDeploymentMode;
+  if (!mode?.assignmentId) {
+    return false;
+  }
+  if (regionId !== null && String(mode.regionId) !== String(regionId)) {
+    return false;
+  }
+  if (assignmentId !== null && String(mode.assignmentId) !== String(assignmentId)) {
+    return false;
+  }
+  return true;
+}
+
+function clearAlternativeDeploymentSelection() {
+  state.alternativeDeploymentMode = {
+    planId: "",
+    regionId: "",
+    assignmentId: "",
+    systemCode: ""
+  };
+}
+
+function toggleAlternativeDeploymentSelection(regionId, assignmentId, systemCode) {
+  const plan = getDeploymentPlanByRegion(regionId);
+  const assignment = plan?.systems?.find((item) => String(item?.id || "") === String(assignmentId));
+  if (!plan || !assignment) {
+    clearAlternativeDeploymentSelection();
+    renderDeploymentEditor();
+    renderDeploymentMap();
+    return;
+  }
+
+  if (isAlternativeDeploymentSelectionActive(regionId, assignmentId)) {
+    clearAlternativeDeploymentSelection();
+    setDeploymentStatus("Alternatif konuş yeri seçimi kapatıldı.", "info");
+  } else {
+    state.alternativeDeploymentMode = {
+      planId: plan.id,
+      regionId,
+      assignmentId,
+      systemCode
+    };
+    state.deploymentView.selectedUnitKey = null;
+    if (!isDeploymentPlanVisible(plan.id)) {
+      state.visibleDeploymentPlanIds.push(plan.id);
+    }
+    setDeploymentStatus(`${systemCode} için alternatif konuş yeri seçimi aktif. Harita üzerinden nokta seçin.`, "info");
+  }
+
+  renderDeploymentEditor();
+  renderDeploymentList();
+  renderDeploymentMap();
+}
+
+function getActiveAlternativeDeploymentContext() {
+  const mode = state.alternativeDeploymentMode;
+  if (!mode?.assignmentId) {
+    return null;
+  }
+  const plan = state.deployments.find((item) => item.id === mode.planId || item.regionId === mode.regionId);
+  const region = getAllProtectedAssets().find((item) => item.id === plan?.regionId);
+  const assignment = plan?.systems?.find((item) => String(item?.id || "") === String(mode.assignmentId));
+  if (!plan || !region || !assignment) {
+    clearAlternativeDeploymentSelection();
+    return null;
+  }
+  return { plan, region, assignment };
+}
+
+function addAlternativeDeploymentPoint(point) {
+  const context = getActiveAlternativeDeploymentContext();
+  if (!context || !point) {
+    return;
+  }
+
+  const { plan, region, assignment } = context;
+  const enriched = enrichPointWithTerrain(point);
+  const validation = validateAlternativeDeploymentPoint(region, assignment.code, enriched);
+  const positions = normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions);
+  const alternativeId = buildAlternativePositionId(positions.length);
+  positions.push({
+    id: alternativeId,
+    ...enriched,
+    distanceFromProtectedCenterM: Math.round(validation.distanceM),
+    criteriaMinM: Math.round(validation.minM),
+    criteriaMaxM: Math.round(validation.maxM),
+    withinDeploymentCriteria: validation.valid,
+    selectedAt: new Date().toISOString()
+  });
+  assignment.alternativeRadarPositions = positions;
+  plan.updatedAt = new Date().toISOString();
+
+  if (!validation.valid) {
+    showMiniPopup("Seçilen alternatif konuş noktası min/max konuşlanma kriteri içinde değil.", "warn");
+  }
+
+  syncSharedDefendedAssetsStorage();
+  renderDeploymentEditor();
+  renderDeploymentList();
+  syncDefenseJsonView();
+  renderCanvas();
+  renderDeploymentMap();
+
+  const statusMode = validation.valid ? "info" : "warn";
+  const rangeText = formatAlternativeCriteriaRange(validation.minM, validation.maxM);
+  setDeploymentStatus(
+    `${assignment.code} alternatif konuş yeri eklendi: (${formatPoint3(enriched)}), mesafe ${formatDistanceKm(validation.distanceM / 1000)} km${rangeText ? ` | Kriter ${rangeText}` : ""}.`,
+    statusMode
+  );
+}
+
+function validateAlternativeDeploymentPoint(region, systemCode, point) {
+  const center = computeRegionCenter(region);
+  const distanceM = Math.hypot(numberOrZero(point.x) - numberOrZero(center.x), numberOrZero(point.y) - numberOrZero(center.y));
+  const criteria = getCriteriaByCode(systemCode);
+  const minM = Math.max(0, numberOrZero(criteria?.centerMinKm) * 1000);
+  const maxM = Math.max(0, numberOrZero(criteria?.centerMaxKm) * 1000);
+  const validMin = !(minM > 0) || distanceM >= minM;
+  const validMax = !(maxM > 0) || distanceM <= maxM;
+  return {
+    center,
+    distanceM,
+    minM,
+    maxM,
+    valid: validMin && validMax
+  };
+}
+
+function formatAlternativeCriteriaRange(minM, maxM) {
+  const minKm = numberOrZero(minM) / 1000;
+  const maxKm = numberOrZero(maxM) / 1000;
+  if (!(minKm > 0) && !(maxKm > 0)) {
+    return "";
+  }
+  return `${formatDistanceKm(minKm)}-${formatDistanceKm(maxKm)} km`;
 }
 
 function onCanvasWheel(event) {
@@ -883,20 +1966,146 @@ function changeZoom(multiplier) {
 }
 
 function setZoom(nextZoom) {
-  state.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(nextZoom) || DEFAULT_ZOOM));
+  const minZoom = getTerrainFitZoom(canvas) || MIN_ZOOM;
+  state.zoom = Math.max(minZoom, Math.min(MAX_ZOOM, Number(nextZoom) || DEFAULT_ZOOM));
+  constrainMainMapView();
   renderCanvas();
 }
 
 function nudgePan(dx, dy) {
   state.panX += dx;
   state.panY += dy;
+  constrainMainMapView();
   renderCanvas();
 }
 
 function resetPan() {
-  state.panX = 0;
-  state.panY = 0;
+  fitMainMapToTerrain();
   renderCanvas();
+}
+
+function fitMainMapToTerrain() {
+  const terrain = state.terrain;
+  if (!terrain || !canvas || !eirsCanvas) {
+    return;
+  }
+
+  configureSharedCanvasForTerrain();
+  const widthM = Math.max(1, numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin));
+  const heightM = Math.max(1, numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin));
+  const nextZoom = clampNumber(
+    Math.min(
+      (canvas.width * MAP_SCALE_METERS_PER_PIXEL) / widthM,
+      (canvas.height * MAP_SCALE_METERS_PER_PIXEL) / heightM
+    ),
+    MIN_ZOOM,
+    MAX_ZOOM
+  );
+  const centerX = (numberOrZero(terrain.xMin) + numberOrZero(terrain.xMax)) / 2;
+  const centerY = (numberOrZero(terrain.yMin) + numberOrZero(terrain.yMax)) / 2;
+  const scale = nextZoom / MAP_SCALE_METERS_PER_PIXEL;
+
+  state.zoom = nextZoom;
+  state.panX = -centerX * scale;
+  state.panY = centerY * scale;
+  state.eirsZoom = nextZoom;
+  state.eirsPanX = state.panX;
+  state.eirsPanY = state.panY;
+  state.deploymentView.baseBounds = {
+    xMin: terrain.xMin,
+    xMax: terrain.xMax,
+    yMin: terrain.yMin,
+    yMax: terrain.yMax
+  };
+  constrainMainMapView();
+  constrainEirsMapView();
+}
+
+function configureSharedCanvasForTerrain() {
+  const terrain = state.terrain;
+  if (!terrain || !canvas) {
+    return;
+  }
+  const widthM = Math.max(1, numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin));
+  const heightM = Math.max(1, numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin));
+  const nextHeight = Math.max(640, Math.min(1400, Math.round(canvas.width * (heightM / widthM))));
+  if (canvas.height !== nextHeight) {
+    canvas.height = nextHeight;
+  }
+}
+
+function getTerrainFitZoom(targetCanvas) {
+  const terrain = state.terrain;
+  if (!terrain || !targetCanvas) {
+    return null;
+  }
+  const widthM = Math.max(1, numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin));
+  const heightM = Math.max(1, numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin));
+  return clampNumber(
+    Math.min(
+      (targetCanvas.width * MAP_SCALE_METERS_PER_PIXEL) / widthM,
+      (targetCanvas.height * MAP_SCALE_METERS_PER_PIXEL) / heightM
+    ),
+    MIN_ZOOM,
+    MAX_ZOOM
+  );
+}
+
+function constrainMainMapView() {
+  const constrained = constrainTerrainView(canvas, state.panX, state.panY, state.zoom);
+  if (!constrained) {
+    return;
+  }
+  state.panX = constrained.panX;
+  state.panY = constrained.panY;
+}
+
+function constrainEirsMapView() {
+  const constrained = constrainTerrainView(eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+  if (!constrained) {
+    return;
+  }
+  state.eirsPanX = constrained.panX;
+  state.eirsPanY = constrained.panY;
+}
+
+function constrainTerrainView(targetCanvas, panX, panY, zoom) {
+  const terrain = state.terrain;
+  if (!terrain || !targetCanvas) {
+    return null;
+  }
+
+  let nextPanX = numberOrZero(panX);
+  let nextPanY = numberOrZero(panY);
+  const centerX = (numberOrZero(terrain.xMin) + numberOrZero(terrain.xMax)) / 2;
+  const centerY = (numberOrZero(terrain.yMin) + numberOrZero(terrain.yMax)) / 2;
+  const scale = numberOrZero(zoom) / MAP_SCALE_METERS_PER_PIXEL;
+  const mapWidthPx = Math.max(1, (numberOrZero(terrain.xMax) - numberOrZero(terrain.xMin)) * scale);
+  const mapHeightPx = Math.max(1, (numberOrZero(terrain.yMax) - numberOrZero(terrain.yMin)) * scale);
+
+  let topLeft = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, terrain.xMin, terrain.yMax);
+  let bottomRight = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, terrain.xMax, terrain.yMin);
+  if (mapWidthPx <= targetCanvas.width) {
+    const centerScreen = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, centerX, centerY);
+    nextPanX += targetCanvas.width / 2 - centerScreen.x;
+  } else if (topLeft.x > 0) {
+    nextPanX -= topLeft.x;
+  } else if (bottomRight.x < targetCanvas.width) {
+    nextPanX += targetCanvas.width - bottomRight.x;
+  }
+
+  topLeft = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, terrain.xMin, terrain.yMax);
+  bottomRight = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, terrain.xMax, terrain.yMin);
+  if (mapHeightPx <= targetCanvas.height) {
+    const centerScreen = worldToScreenForView(targetCanvas, nextPanX, nextPanY, zoom, centerX, centerY);
+    nextPanY += targetCanvas.height / 2 - centerScreen.y;
+  } else if (topLeft.y > 0) {
+    nextPanY -= topLeft.y;
+  } else if (bottomRight.y < targetCanvas.height) {
+    nextPanY += targetCanvas.height - bottomRight.y;
+  }
+
+  return { panX: nextPanX, panY: nextPanY };
 }
 
 function pxToWorld(px) {
@@ -920,6 +2129,18 @@ function screenToWorldForView(targetCanvas, panX, panY, zoom, sx, sy) {
   return {
     x: (sx - tx) / scale,
     y: (ty - sy) / scale
+  };
+}
+
+function worldToScreenForView(targetCanvas, panX, panY, zoom, x, y) {
+  const cx = targetCanvas.width / 2;
+  const cy = targetCanvas.height / 2;
+  const tx = panX + cx;
+  const ty = panY + cy;
+  const scale = zoom / MAP_SCALE_METERS_PER_PIXEL;
+  return {
+    x: tx + numberOrZero(x) * scale,
+    y: ty - numberOrZero(y) * scale
   };
 }
 
@@ -1032,7 +2253,7 @@ function saveDraft() {
     name: state.draft.name,
     type: state.draft.type,
     hvaValue: state.draft.hvaValue,
-    points: state.draft.points.map((p) => ({ ...p }))
+    points: state.draft.points.map((p) => enrichPointWithTerrain(p))
   };
 
   state.regionCounter += 1;
@@ -1046,13 +2267,18 @@ function saveDraft() {
   renderAll();
 }
 
-function onCanvasClick(event) {
+async function onCanvasClick(event) {
+  const point = getCanvasPoint(event);
+  await addDefenseDraftPoint(point);
+}
+
+async function addDefenseDraftPoint(rawPoint) {
   if (!state.draft) {
     setStatus("Önce yeni bir korunacak varlık taslağı başlatın.", "warn");
     return;
   }
 
-  const point = getCanvasPoint(event);
+  const point = await enrichPointWithSourceTerrain(rawPoint);
   if (!point) {
     return;
   }
@@ -1064,7 +2290,7 @@ function onCanvasClick(event) {
   }
 
   const base = getDraftValidationMessage(state.draft);
-  setStatus(`${base} Son nokta: (${Math.round(point.x)}, ${Math.round(point.y)})`, "info");
+  setStatus(`${base} Son nokta: (${formatPoint3(point)})`, "info");
   renderAll();
 }
 
@@ -1208,6 +2434,7 @@ function renderAll() {
   renderDeploymentEditor();
   renderDeploymentList();
   renderDeploymentMap();
+  syncTerrainScene();
   syncDefenseJsonView();
 }
 
@@ -1249,7 +2476,10 @@ function renderSavedList() {
 
     const small = document.createElement("small");
     const typeText = region.type === "point" ? "Nokta Savunması" : "Bölge Savunması";
-    small.textContent = `${typeText} | Nokta Sayısı: ${region.points.length} | HVA: ${Math.round(numberOrZero(region.hvaValue))}`;
+    const center = computeRegionCenter(region);
+    small.textContent =
+      `${typeText} | Nokta Sayısı: ${region.points.length} | HVA: ${Math.round(numberOrZero(region.hvaValue))} | ` +
+      `Kot: ${Math.round(numberOrZero(center.z))} m`;
 
     info.append(strong, small);
 
@@ -1298,9 +2528,8 @@ function renderEirsSavedList() {
     strong.textContent = `${radar.id} - ${radar.name}`;
 
     const small = document.createElement("small");
-    small.textContent = `EİRS | HVA: ${Math.round(numberOrZero(radar.hvaValue))} | Koord: (${Math.round(
-      radar.points[0]?.x || 0
-    )}, ${Math.round(radar.points[0]?.y || 0)})`;
+    const point = enrichPointWithTerrain(radar.points[0]);
+    small.textContent = `EİRS | HVA: ${Math.round(numberOrZero(radar.hvaValue))} | Koord: (${formatPoint3(point)})`;
 
     info.append(strong, small);
 
@@ -1392,7 +2621,7 @@ function saveEirsDraft() {
     name: state.eirsDraft.name,
     type: "point",
     hvaValue: state.eirsDraft.hvaValue,
-    points: state.eirsDraft.points.map((point) => ({ ...point }))
+    points: state.eirsDraft.points.map((point) => enrichPointWithTerrain(point))
   };
 
   state.eirsCounter += 1;
@@ -1409,17 +2638,22 @@ function isEirsDraftValid(draft) {
   return Boolean(draft && Array.isArray(draft.points) && draft.points.length === 1);
 }
 
-function onEirsCanvasClick(event) {
+async function onEirsCanvasClick(event) {
+  const point = getCanvasPointForView(eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom, event);
+  await setEirsDraftPoint(point);
+}
+
+async function setEirsDraftPoint(rawPoint) {
   if (!state.eirsDraft) {
     setEirsStatus("Önce yeni bir EİRS taslağı başlatın.", "warn");
     return;
   }
-  const point = getCanvasPointForView(eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom, event);
+  const point = await enrichPointWithSourceTerrain(rawPoint);
   if (!point) {
     return;
   }
   state.eirsDraft.points = [point];
-  setEirsStatus(`EİRS noktası seçildi: (${Math.round(point.x)}, ${Math.round(point.y)})`, "info");
+  setEirsStatus(`EİRS noktası seçildi: (${formatPoint3(point)})`, "info");
   renderAll();
 }
 
@@ -1461,6 +2695,9 @@ function renderEirsDraftTable() {
   });
   yCell.append(yInput);
 
+  const zCell = document.createElement("td");
+  zCell.textContent = `${Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y)))} m`;
+
   const actionCell = document.createElement("td");
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
@@ -1471,7 +2708,7 @@ function renderEirsDraftTable() {
   });
   actionCell.append(clearBtn);
 
-  tr.append(indexCell, xCell, yCell, actionCell);
+  tr.append(indexCell, xCell, yCell, zCell, actionCell);
   refs.eirsCoordTableBody.append(tr);
 }
 
@@ -1487,11 +2724,10 @@ function updateEirsDraftPoint(axis, rawValue) {
   }
 
   state.eirsDraft.points[0][axis] = Math.round(num);
+  state.eirsDraft.points[0] = enrichPointWithTerrain(state.eirsDraft.points[0]);
   syncEirsActionButtons();
   setEirsStatus(
-    `EİRS koordinatı güncellendi: (${Math.round(numberOrZero(state.eirsDraft.points[0].x))}, ${Math.round(
-      numberOrZero(state.eirsDraft.points[0].y)
-    )})`,
+    `EİRS koordinatı güncellendi: (${formatPoint3(state.eirsDraft.points[0])})`,
     "info"
   );
   renderEirsCanvas();
@@ -1553,7 +2789,13 @@ function persistEirsState() {
         name: item.name,
         type: "point",
         hvaValue: item.hvaValue,
-        points: item.points.map((point) => ({ x: point.x, y: point.y }))
+        points: item.points.map((point) => ({
+          x: point.x,
+          y: point.y,
+          z: Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y))),
+          lat: numberOrNull(point.lat),
+          lon: numberOrNull(point.lon)
+        }))
       }))
     };
     window.sessionStorage.setItem(EIRS_STATE_KEY, JSON.stringify(payload));
@@ -1625,7 +2867,10 @@ function persistRegionsState() {
         points: Array.isArray(region.points)
           ? region.points.map((point) => ({
               x: Math.round(numberOrZero(point.x)),
-              y: Math.round(numberOrZero(point.y))
+              y: Math.round(numberOrZero(point.y)),
+              z: Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y))),
+              lat: numberOrNull(point.lat),
+              lon: numberOrNull(point.lon)
             }))
           : []
       }))
@@ -1642,10 +2887,7 @@ function normalizePersistedRegion(region) {
   const type = region?.type === "area" ? "area" : "point";
   const points = Array.isArray(region?.points)
     ? region.points
-        .map((point) => ({
-          x: Math.round(numberOrZero(point?.x)),
-          y: Math.round(numberOrZero(point?.y))
-        }))
+        .map((point) => normalizeStoredPoint(point))
         .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
     : [];
 
@@ -1703,11 +2945,15 @@ function buildSharedDefendedAssetsPayload() {
       HVA_value: Math.max(1, Math.min(10, Math.round(numberOrZero(region.hvaValue) || 1))),
       center: {
         x: Math.round(numberOrZero(center.x)),
-        y: Math.round(numberOrZero(center.y))
+        y: Math.round(numberOrZero(center.y)),
+        z: Math.round(numberOrZero(center.z ?? sampleTerrainElevation(center.x, center.y)))
       },
       points: region.points.map((point) => ({
         x: Math.round(numberOrZero(point.x)),
-        y: Math.round(numberOrZero(point.y))
+        y: Math.round(numberOrZero(point.y)),
+        z: Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y))),
+        lat: numberOrNull(point.lat),
+        lon: numberOrNull(point.lon)
       }))
     };
   });
@@ -1723,7 +2969,8 @@ function buildSharedDefendedAssetsPayload() {
       const unitId = `${unit.planId}_${sanitizeSystemCode(unit.code)}_${assignmentToken}${String(unit.sequence).padStart(2, "0")}`;
       const radarCenter = {
         x: Math.round(numberOrZero(unit.components?.radar?.x)),
-        y: Math.round(numberOrZero(unit.components?.radar?.y))
+        y: Math.round(numberOrZero(unit.components?.radar?.y)),
+        z: Math.round(sampleTerrainElevation(unit.components?.radar?.x, unit.components?.radar?.y))
       };
       assets.push({
         id: `${unitId}.Radar`,
@@ -1742,7 +2989,8 @@ function buildSharedDefendedAssetsPayload() {
       unitFfsComponents.forEach((ffs, index) => {
         const ffsCenter = {
           x: Math.round(numberOrZero(ffs?.x)),
-          y: Math.round(numberOrZero(ffs?.y))
+          y: Math.round(numberOrZero(ffs?.y)),
+          z: Math.round(sampleTerrainElevation(ffs?.x, ffs?.y))
         };
         const loadoutRow = unitFfsLoadout[index] || {};
         const munitionLabel = String(loadoutRow?.munitionCode || "").trim()
@@ -1864,6 +3112,7 @@ function applyImportedScenarioIfPresent() {
   state.selectedDeploymentRegionId = "";
   state.highlightedRegionId = null;
   state.scenarioThreatDirection = importedScenarioThreatDirection;
+  clearAlternativeDeploymentSelection();
 
   for (const asset of importedAssets) {
     const normalized = normalizeImportedProtectedAsset(asset);
@@ -1937,15 +3186,12 @@ function normalizeImportedProtectedAsset(asset) {
     const x = Math.round(numberOrZero(coords?.x));
     const y = Math.round(numberOrZero(coords?.y));
     if (Number.isFinite(x) && Number.isFinite(y)) {
-      points = [{ x, y }];
+      points = [enrichPointWithTerrain({ x, y, z: coords?.z, lat: coords?.lat, lon: coords?.lon })];
     }
   } else {
     const coords = Array.isArray(asset?.geometry?.coordinates) ? asset.geometry.coordinates : [];
     points = coords
-      .map((point) => ({
-        x: Math.round(numberOrZero(point?.x)),
-        y: Math.round(numberOrZero(point?.y))
-      }))
+      .map((point) => enrichPointWithTerrain(point))
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   }
 
@@ -1983,7 +3229,9 @@ function normalizeImportedDeploymentPlan(plan) {
         ffsMunitionCodes: getAssignmentMunitionCodes(code, assignmentSeed, ffsCountPerUnit),
         count,
         ffsCountPerUnit,
-        totalReadyMissilePerUnit: Math.max(0, Math.floor(Number(item?.totalReadyMissilePerUnit) || 0))
+        totalReadyMissilePerUnit: Math.max(0, Math.floor(Number(item?.totalReadyMissilePerUnit) || 0)),
+        alternativeRadarPositions: normalizeAlternativeRadarPositions(item?.alternativeRadarPositions),
+        alternativeComponentLayoutsById: normalizeAlternativeComponentLayoutsById(item?.alternativeComponentLayoutsById, getSystemComponentSpec(code, { ffsCountPerUnit }))
       };
     })
     .filter((item) => item && item.count > 0);
@@ -2143,7 +3391,9 @@ function setEirsStatus(message, mode) {
 }
 
 function setEirsZoom(nextZoom) {
-  state.eirsZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(nextZoom) || DEFAULT_ZOOM));
+  const minZoom = getTerrainFitZoom(eirsCanvas) || MIN_ZOOM;
+  state.eirsZoom = Math.max(minZoom, Math.min(MAX_ZOOM, Number(nextZoom) || DEFAULT_ZOOM));
+  constrainEirsMapView();
   renderEirsCanvas();
 }
 
@@ -2154,12 +3404,12 @@ function changeEirsZoom(multiplier) {
 function nudgeEirsPan(dx, dy) {
   state.eirsPanX += dx;
   state.eirsPanY += dy;
+  constrainEirsMapView();
   renderEirsCanvas();
 }
 
 function resetEirsPan() {
-  state.eirsPanX = 0;
-  state.eirsPanY = 0;
+  fitMainMapToTerrain();
   renderEirsCanvas();
 }
 
@@ -2203,12 +3453,15 @@ function renderDraftTable() {
     yInput.type = "number";
     yInput.step = "1";
     yInput.value = String(point.y);
-    yInput.addEventListener("input", () => {
-      updateDraftPoint(index, "y", yInput.value);
-    });
-    yCell.append(yInput);
+  yInput.addEventListener("input", () => {
+    updateDraftPoint(index, "y", yInput.value);
+  });
+  yCell.append(yInput);
 
-    const actionCell = document.createElement("td");
+  const zCell = document.createElement("td");
+  zCell.textContent = `${Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y)))} m`;
+
+  const actionCell = document.createElement("td");
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "table-actions warn";
@@ -2219,7 +3472,7 @@ function renderDraftTable() {
     });
 
     actionCell.append(removeBtn);
-    tr.append(indexCell, xCell, yCell, actionCell);
+  tr.append(indexCell, xCell, yCell, zCell, actionCell);
     refs.coordTableBody.append(tr);
   });
 }
@@ -2235,6 +3488,7 @@ function updateDraftPoint(index, axis, rawValue) {
   }
 
   state.draft.points[index][axis] = Math.round(num);
+  state.draft.points[index] = enrichPointWithTerrain(state.draft.points[index]);
   syncAreaActionButtons();
   renderAreaGuide();
   renderCanvas();
@@ -2255,11 +3509,14 @@ function renderCanvas() {
     return;
   }
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const hasTerrainBase = drawTerrainRasterOnContext(ctx, canvas, state.panX, state.panY, state.zoom);
 
   ctx.save();
   applyViewTransform();
-  drawWorldGrid();
-  drawOriginAxes();
+  if (!hasTerrainBase) {
+    drawWorldGrid();
+    drawOriginAxes();
+  }
 
   for (const region of getAllProtectedAssets()) {
     const highlighted = state.highlightedRegionId === region.id;
@@ -2274,8 +3531,11 @@ function renderCanvas() {
 
   ctx.restore();
 
-  drawAxisValueOverlay();
+  if (!hasTerrainBase) {
+    drawAxisValueOverlay();
+  }
   drawLegendOverlay();
+  syncTerrainScene();
 }
 
 function renderEirsCanvas() {
@@ -2283,11 +3543,14 @@ function renderEirsCanvas() {
     return;
   }
   eirsCtx.clearRect(0, 0, eirsCanvas.width, eirsCanvas.height);
+  const hasTerrainBase = drawTerrainRasterOnContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
 
   eirsCtx.save();
   applyViewTransformToContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
-  drawWorldGridOnContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
-  drawOriginAxesOnContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+  if (!hasTerrainBase) {
+    drawWorldGridOnContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+    drawOriginAxesOnContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+  }
 
   for (const region of state.savedRegions) {
     drawRegion(eirsCtx, region, "saved", (px) => pxToWorldForZoom(px, state.eirsZoom), getAssetStyleMode(region));
@@ -2326,7 +3589,10 @@ function renderEirsCanvas() {
   }
 
   eirsCtx.restore();
-  drawAxisValueOverlayForContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+  if (!hasTerrainBase) {
+    drawAxisValueOverlayForContext(eirsCtx, eirsCanvas, state.eirsPanX, state.eirsPanY, state.eirsZoom);
+  }
+  syncTerrainScene();
 }
 
 function drawWorldGridOnContext(targetCtx, targetCanvas, panX, panY, zoom) {
@@ -2447,7 +3713,8 @@ function drawMainMapDeploymentOverlay() {
           coverage.type === "radar" ? unit.color : "#ffb27d",
           coverage.type,
           pxToWorld(1.5),
-          coverage.blindSectors
+          coverage.blindSectors,
+          coverage
         );
       }
     }
@@ -2466,7 +3733,20 @@ function drawMainMapEirsCoverageOverlay() {
     if (!point) {
       continue;
     }
-    drawCoverageCircleWorld(ctx, point.x, point.y, getEirsRadarRangeMeters(), "#7fd8ff", "radar", pxToWorld(1.2));
+    drawCoverageCircleWorld(
+      ctx,
+      point.x,
+      point.y,
+      getEirsRadarRangeMeters(),
+      "#7fd8ff",
+      "radar",
+      pxToWorld(1.2),
+      [],
+      {
+        sourceHeightM: LOS_RADAR_SOURCE_HEIGHT_M,
+        targetHeightM: getCoverageTargetAltitudeMeters()
+      }
+    );
     drawCenterMarkerWorld(ctx, point.x, point.y, pxToWorld(5));
   }
 }
@@ -2903,8 +4183,11 @@ function renderDeploymentEditor() {
         title.textContent = formatAssignmentMunitionSummary(system.code, assignment);
         const spec = getSystemComponentSpec(system.code, assignment);
         const totalReadyMissile = getAssignmentTotalReadyMissile(system.code, assignment);
+        const alternativePositions = normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions);
         const meta = document.createElement("small");
-        meta.textContent = `${assignment.count} Ünite | FFS/Ünite ${spec.ffsCount} | Hazır Mühimmat ${totalReadyMissile}`;
+        meta.textContent =
+          `${assignment.count} Ünite | FFS/Ünite ${spec.ffsCount} | Hazır Mühimmat ${totalReadyMissile} | ` +
+          `Alternatif konuş yeri ${alternativePositions.length}`;
         info.append(title, meta);
 
         const actions = document.createElement("div");
@@ -2919,7 +4202,18 @@ function renderDeploymentEditor() {
         removeBtn.className = "warn table-actions";
         removeBtn.textContent = "Sil";
         removeBtn.addEventListener("click", () => removeDeploymentAssignment(state.selectedDeploymentRegionId, assignment.id));
-        actions.append(editBtn, removeBtn);
+        const alternativeBtn = document.createElement("button");
+        alternativeBtn.type = "button";
+        alternativeBtn.className = isAlternativeDeploymentSelectionActive(state.selectedDeploymentRegionId, assignment.id)
+          ? "table-actions"
+          : "ghost table-actions";
+        alternativeBtn.textContent = isAlternativeDeploymentSelectionActive(state.selectedDeploymentRegionId, assignment.id)
+          ? "Alternatif Seçimi Aktif"
+          : "Alternatif Konuş Yeri Ekle";
+        alternativeBtn.addEventListener("click", () => {
+          toggleAlternativeDeploymentSelection(state.selectedDeploymentRegionId, assignment.id, system.code);
+        });
+        actions.append(editBtn, removeBtn, alternativeBtn);
 
         item.append(info, actions);
         list.append(item);
@@ -3378,18 +4672,25 @@ function saveDeploymentAssignmentFromModal() {
     0
   );
 
+  const nextAssignmentId = state.deploymentAssignmentModal.assignmentId || `ASG${String(state.deploymentAssignmentCounter).padStart(4, "0")}`;
+  const existingIndex = plan.systems.findIndex((item) => String(item?.id || "") === String(nextAssignmentId));
+  const existingAssignment = existingIndex >= 0 ? plan.systems[existingIndex] : null;
   const nextAssignment = {
-    id: state.deploymentAssignmentModal.assignmentId || `ASG${String(state.deploymentAssignmentCounter).padStart(4, "0")}`,
+    id: nextAssignmentId,
     code: systemCode,
     munitionCode: primaryMunitionCode,
     ffsMunitionCodes: ffsLoadout.map((row) => row.munitionCode),
     ffsLoadout,
     count,
     ffsCountPerUnit: componentSpec.ffsCount,
-    totalReadyMissilePerUnit
+    totalReadyMissilePerUnit,
+    alternativeRadarPositions: normalizeAlternativeRadarPositions(existingAssignment?.alternativeRadarPositions),
+    alternativeComponentLayoutsById: normalizeAlternativeComponentLayoutsById(
+      existingAssignment?.alternativeComponentLayoutsById,
+      componentSpec
+    )
   };
 
-  const existingIndex = plan.systems.findIndex((item) => String(item?.id || "") === String(nextAssignment.id));
   if (existingIndex >= 0) {
     purgeComponentLayoutsByAssignmentIds([nextAssignment.id]);
     plan.systems[existingIndex] = nextAssignment;
@@ -3426,6 +4727,9 @@ function removeDeploymentAssignment(regionId, assignmentId) {
   purgeComponentLayoutsByAssignmentIds([assignmentId]);
   if (plan.systems.length === before) {
     return;
+  }
+  if (isAlternativeDeploymentSelectionActive(regionId, assignmentId)) {
+    clearAlternativeDeploymentSelection();
   }
   if (plan.systems.length === 0) {
     removeDeploymentPlan(plan.id);
@@ -3483,6 +4787,7 @@ function getJsonScenarioSummaryHtml() {
     `Korunacak Varlik: ${protectedIds.length} (${formatIdList(protectedIds)})`,
     `EIRS: ${eirsIds.length} (${formatIdList(eirsIds)})`,
     `HSS: ${getTotalDeployedHssUnitCount()} (${formatIdList(hssPlanIds)})`,
+    `Arazi: ${state.terrain ? `${state.terrain.name} (${state.terrain.width}x${state.terrain.height})` : "-"}`,
     `Tehdit - Platform: ${threatSummary.platformOnly.length} (${formatIdList(threatSummary.platformOnly)})`,
     `Tehdit - Payloadlu Platform: ${threatSummary.payloadPlatforms.length} (${formatPayloadPlatformList(threatSummary.payloadPlatforms)})`,
     `Tehdit - Balistik: ${threatSummary.ballistic.length} (${formatIdList(threatSummary.ballistic)})`
@@ -3695,6 +5000,17 @@ function buildUnifiedScenarioExport(scenarioName = "MSÜ Senaryo Plani") {
         const ffsLoadout = getAssignmentFfsLoadout(item.code, item);
         const ffsMunitionCodes = getAssignmentMunitionCodes(item.code, item);
         const assignmentMunitionCode = String(ffsMunitionCodes[0] || item?.munitionCode || getPreferredMunitionCode(item.code, item)).trim();
+        const alternativeRadarPositions = normalizeAlternativeRadarPositions(item.alternativeRadarPositions)
+          .map((position) => buildAlternativeRadarPositionExport(position));
+        const region = getAllProtectedAssets().find((asset) => asset.id === plan.regionId);
+        const alternativeDeploymentLayouts = buildAlternativeDeploymentLayoutExports({
+          planId: plan.id,
+          region,
+          assignment: item,
+          systemCode: item.code,
+          ffsLoadout,
+          ffsMunitionCodes
+        });
         return {
           id: String(item?.id || "").trim(),
           systemCode: item.code,
@@ -3703,7 +5019,9 @@ function buildUnifiedScenarioExport(scenarioName = "MSÜ Senaryo Plani") {
           ffsMunitionCodes,
           count: Math.max(0, Math.floor(Number(item.count) || 0)),
           ffsCountPerUnit: Math.max(1, Math.floor(Number(item.ffsCountPerUnit) || 1)),
-          totalReadyMissilePerUnit: Math.max(0, Math.floor(Number(item.totalReadyMissilePerUnit) || 0))
+          totalReadyMissilePerUnit: Math.max(0, Math.floor(Number(item.totalReadyMissilePerUnit) || 0)),
+          alternativeRadarPositions,
+          alternativeDeploymentLayouts
         };
       })
   }));
@@ -3762,8 +5080,41 @@ function buildUnifiedScenarioExport(scenarioName = "MSÜ Senaryo Plani") {
     munitionCatalog,
     deploymentPlans,
     deployedUnits,
+    terrain: buildTerrainExportPayload(),
     threatScenario,
     notes: "Tek senaryo cikti dosyasi savunma ve tehdit planlama verilerini birlikte tasir."
+  };
+}
+
+function buildTerrainExportPayload() {
+  const terrain = state.terrain;
+  if (!terrain) {
+    return null;
+  }
+
+  return {
+    type: terrain.type,
+    name: terrain.name,
+    source: terrain.source,
+    origin: terrain.origin,
+    width: terrain.width,
+    height: terrain.height,
+    cellSizeMeters: terrain.cellSizeMeters,
+    cellSizeXMeters: terrain.cellSizeXMeters,
+    cellSizeYMeters: terrain.cellSizeYMeters,
+    rowsNorthToSouth: terrain.rowsNorthToSouth,
+    extent: {
+      xMin: terrain.xMin,
+      xMax: terrain.xMax,
+      yMin: terrain.yMin,
+      yMax: terrain.yMax
+    },
+    elevationM: {
+      min: terrain.minElevationM,
+      max: terrain.maxElevationM
+    },
+    crs: terrain.crs,
+    geo: terrain.geo
   };
 }
 
@@ -3790,7 +5141,10 @@ function buildProtectedAssetExport(region) {
         type: "Point",
         coordinates: {
           x: Math.round(numberOrZero(point.x)),
-          y: Math.round(numberOrZero(point.y))
+          y: Math.round(numberOrZero(point.y)),
+          z: Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y))),
+          lat: numberOrNull(point.lat),
+          lon: numberOrNull(point.lon)
         }
       }
     };
@@ -3803,7 +5157,10 @@ function buildProtectedAssetExport(region) {
       type: "Polygon",
       coordinates: region.points.map((point) => ({
         x: Math.round(numberOrZero(point.x)),
-        y: Math.round(numberOrZero(point.y))
+        y: Math.round(numberOrZero(point.y)),
+        z: Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y))),
+        lat: numberOrNull(point.lat),
+        lon: numberOrNull(point.lon)
       }))
     }
   };
@@ -4001,6 +5358,18 @@ function buildDeployedUnitExport(unit) {
   const akrBlindSectors = normalizeBlindSectors(
     unit.components.ffs.flatMap((item) => normalizeBlindSectors(item?.blindSectors))
   );
+  const alternativeRadarPositions = normalizeAlternativeRadarPositions(unit.assignment?.alternativeRadarPositions)
+    .map((position) => buildAlternativeRadarPositionExport(position));
+  const alternativeDeploymentLayouts = buildAlternativeDeploymentLayoutExports({
+    planId: unit.planId,
+    unitId,
+    center: unit.center,
+    assignment: unit.assignment,
+    systemCode: unit.code,
+    componentSpec: unit.componentSpec,
+    ffsLoadout,
+    ffsMunitionCodes
+  });
 
   return {
     id: unitId,
@@ -4013,31 +5382,25 @@ function buildDeployedUnitExport(unit) {
     ffsLoadout,
     ffsMunitionCodes,
     sequence: unit.sequence,
+    alternativeDeploymentLayouts,
     components: {
       radar: {
         id: `${unitId}.Radar`,
-        position: {
-          x: Math.round(numberOrZero(unit.components.radar.x)),
-          y: Math.round(numberOrZero(unit.components.radar.y))
-        },
+        position: buildTerrainPositionExport(unit.components.radar),
+        alternativePositions: alternativeRadarPositions,
+        lineOfSight: buildLineOfSightModelExport("radar"),
         HVA_value: radarHvaValue,
         blindSectors: normalizeBlindSectors(unit.components.radar.blindSectors)
       },
       kkm: {
         id: `${unitId}.KKM`,
-        position: {
-          x: Math.round(numberOrZero(unit.components.kkm.x)),
-          y: Math.round(numberOrZero(unit.components.kkm.y))
-        }
+        position: buildTerrainPositionExport(unit.components.kkm)
       },
       ...(unit.components.akr
         ? {
             akr: {
               id: `${unitId}.AKR`,
-              position: {
-                x: Math.round(numberOrZero(unit.components.akr.x)),
-                y: Math.round(numberOrZero(unit.components.akr.y))
-              },
+              position: buildTerrainPositionExport(unit.components.akr),
               HVA_value: radarHvaValue,
               blindSectors: akrBlindSectors
             }
@@ -4047,10 +5410,7 @@ function buildDeployedUnitExport(unit) {
         ? {
             eo: {
               id: `${unitId}.EO`,
-              position: {
-                x: Math.round(numberOrZero(unit.components.eo.x)),
-                y: Math.round(numberOrZero(unit.components.eo.y))
-              }
+              position: buildTerrainPositionExport(unit.components.eo)
             }
           }
         : {}),
@@ -4058,13 +5418,163 @@ function buildDeployedUnitExport(unit) {
         id: `${unitId}.FFS${index + 1}`,
         munitionCode: String(ffsMunitionCodes[index] || munitionCode || "").trim(),
         missileCount: Math.max(0, Math.floor(Number(ffsLoadout[index]?.missileCount) || 0)),
-        position: {
-          x: Math.round(numberOrZero(item.x)),
-          y: Math.round(numberOrZero(item.y))
-        },
+        position: buildTerrainPositionExport(item),
+        lineOfSight: buildLineOfSightModelExport("wez"),
         blindSectors: normalizeBlindSectors(item.blindSectors)
       }))
     }
+  };
+}
+
+function buildTerrainPositionExport(point) {
+  const enriched = enrichPointWithTerrain(point);
+  return {
+    x: enriched.x,
+    y: enriched.y,
+    z: enriched.z,
+    lat: numberOrNull(enriched.lat),
+    lon: numberOrNull(enriched.lon)
+  };
+}
+
+function buildAlternativeRadarPositionExport(point) {
+  const base = buildTerrainPositionExport(point);
+  const exported = { ...base };
+  const distanceM = numberOrNull(point?.distanceFromProtectedCenterM);
+  const criteriaMinM = numberOrNull(point?.criteriaMinM);
+  const criteriaMaxM = numberOrNull(point?.criteriaMaxM);
+  if (distanceM !== null) {
+    exported.distanceFromProtectedCenterM = Math.round(distanceM);
+  }
+  if (criteriaMinM !== null) {
+    exported.criteriaMinM = Math.round(criteriaMinM);
+  }
+  if (criteriaMaxM !== null) {
+    exported.criteriaMaxM = Math.round(criteriaMaxM);
+  }
+  if (typeof point?.withinDeploymentCriteria === "boolean") {
+    exported.withinDeploymentCriteria = point.withinDeploymentCriteria;
+  }
+  if (point?.selectedAt) {
+    exported.selectedAt = String(point.selectedAt);
+  }
+  return exported;
+}
+
+function buildAlternativeDeploymentLayoutExports(options = {}) {
+  const assignment = options.assignment || {};
+  const systemCode = String(options.systemCode || assignment?.code || assignment?.systemCode || "").trim();
+  if (!systemCode) {
+    return [];
+  }
+
+  const positions = normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions);
+  if (!positions.length) {
+    return [];
+  }
+
+  const center = options.center || (options.region ? computeRegionCenter(options.region) : null);
+  if (!center) {
+    return [];
+  }
+
+  const criteria = getCriteriaByCode(systemCode);
+  const constraints = criteria?.pairConstraints || null;
+  const componentSpec = options.componentSpec || getSystemComponentSpec(systemCode, assignment);
+  const ffsLoadout = Array.isArray(options.ffsLoadout) && options.ffsLoadout.length
+    ? options.ffsLoadout
+    : getUnitFfsLoadout(systemCode, assignment, 0, componentSpec.ffsCount);
+  const ffsMunitionCodes = Array.isArray(options.ffsMunitionCodes) && options.ffsMunitionCodes.length
+    ? options.ffsMunitionCodes
+    : ffsLoadout.map((row) => row.munitionCode);
+  const storedLayoutsById = normalizeAlternativeComponentLayoutsById(
+    assignment.alternativeComponentLayoutsById,
+    componentSpec
+  );
+
+  return positions.map((position, index) => {
+    const alternativePositionId = getAlternativePositionId(position, index);
+    const radarBase = enrichPointWithTerrain(position);
+    const defaultLayout = createDefaultComponentLayout(radarBase, center, constraints, componentSpec);
+    const layout = normalizeComponentLayout(storedLayoutsById[alternativePositionId] || defaultLayout, componentSpec, defaultLayout);
+    const check = validateComponentLayout(layout, constraints);
+    const deploymentCheck = options.region
+      ? validateAlternativeDeploymentPoint(options.region, systemCode, layout.radar)
+      : null;
+    const alternativeIdBase = String(
+      options.unitId ||
+      `${options.planId || "PLAN"}_${sanitizeSystemCode(systemCode)}_${sanitizeSystemCode(assignment?.id || "ASSIGN")}`
+    ).trim();
+    const alternativeId = `${alternativeIdBase}.${alternativePositionId}`;
+    return {
+      id: alternativeId,
+      sourceRadarPosition: buildAlternativeRadarPositionExport(layout.radar),
+      withinDeploymentCriteria: deploymentCheck ? deploymentCheck.valid : position.withinDeploymentCriteria !== false,
+      componentConstraintValid: check.valid,
+      componentConstraintErrors: check.errors,
+      components: buildAlternativeDeploymentComponentsExport(alternativeId, layout, ffsLoadout, ffsMunitionCodes, componentSpec)
+    };
+  });
+}
+
+function buildAlternativeDeploymentComponentsExport(alternativeId, layout, ffsLoadout, ffsMunitionCodes, componentSpec) {
+  const radarHvaValue = Math.max(1, Math.min(10, Math.round(numberOrZero(componentSpec?.radarHVAValue) || 1)));
+  const akrBlindSectors = normalizeBlindSectors(
+    layout.ffs.flatMap((item) => normalizeBlindSectors(item?.blindSectors))
+  );
+  return {
+    radar: {
+      id: `${alternativeId}.Radar`,
+      position: buildTerrainPositionExport(layout.radar),
+      lineOfSight: buildLineOfSightModelExport("radar"),
+      HVA_value: radarHvaValue,
+      blindSectors: normalizeBlindSectors(layout.radar.blindSectors)
+    },
+    kkm: {
+      id: `${alternativeId}.KKM`,
+      position: buildTerrainPositionExport(layout.kkm)
+    },
+    ...(layout.akr
+      ? {
+          akr: {
+            id: `${alternativeId}.AKR`,
+            position: buildTerrainPositionExport(layout.akr),
+            HVA_value: radarHvaValue,
+            blindSectors: akrBlindSectors
+          }
+        }
+      : {}),
+    ...(layout.eo
+      ? {
+          eo: {
+            id: `${alternativeId}.EO`,
+            position: buildTerrainPositionExport(layout.eo)
+          }
+        }
+      : {}),
+    ffs: layout.ffs.map((item, index) => ({
+      id: `${alternativeId}.FFS${index + 1}`,
+      munitionCode: String(ffsMunitionCodes[index] || ffsMunitionCodes[0] || "").trim(),
+      missileCount: Math.max(0, Math.floor(Number(ffsLoadout[index]?.missileCount) || 0)),
+      position: buildTerrainPositionExport(item),
+      lineOfSight: buildLineOfSightModelExport("wez"),
+      blindSectors: normalizeBlindSectors(item.blindSectors)
+    }))
+  };
+}
+
+function buildLineOfSightModelExport(type) {
+  const isRadar = type === "radar";
+  return {
+    enabled: shouldUseLineOfSightCoverage(),
+    sourceHeightM: isRadar ? LOS_RADAR_SOURCE_HEIGHT_M : LOS_WEZ_SOURCE_HEIGHT_M,
+    targetAltitudeFt: Math.round(numberOrZero(state.coverageTargetAltitudeFt || DEFAULT_COVERAGE_ALTITUDE_FT)),
+    targetHeightM: getCoverageTargetAltitudeMeters(),
+    clearanceM: LOS_CLEARANCE_M,
+    effectiveEarthRadiusM: Math.round(LOS_EFFECTIVE_EARTH_RADIUS_M),
+    angularStepDeg: LOS_ANGULAR_STEP_DEG,
+    radialSamples: LOS_RADIAL_SAMPLES,
+    terrainSource: state.terrain?.source || state.terrain?.name || null
   };
 }
 
@@ -4092,6 +5602,9 @@ function removeDeploymentPlan(planId) {
   state.visibleDeploymentPlanIds = state.visibleDeploymentPlanIds.filter((id) => id !== planId);
   purgeComponentLayoutsByPlanIds([planId]);
   state.deploymentView.selectedUnitKey = null;
+  if (state.alternativeDeploymentMode.planId === planId) {
+    clearAlternativeDeploymentSelection();
+  }
   if (plan?.regionId) {
     delete state.deploymentDraftByRegion[plan.regionId];
   }
@@ -4496,7 +6009,61 @@ function pushDistanceError(errors, label, distanceM, rule) {
   }
 }
 
-function openComponentEditor(unit) {
+function openAlternativeComponentEditor(target) {
+  if (!target?.plan || !target?.region || !target?.assignment || !target?.position) {
+    return;
+  }
+  clearAlternativeDeploymentSelection();
+
+  const plan = target.plan;
+  const assignment = target.assignment;
+  const alternativeId = getAlternativePositionId(target.position, target.positionIndex);
+  const systemCode = String(assignment.code || "").trim();
+  const componentSpec = getSystemComponentSpec(systemCode, assignment);
+  const constraints = getCriteriaByCode(systemCode)?.pairConstraints || null;
+  const center = computeRegionCenter(target.region);
+  const radarBase = enrichPointWithTerrain(target.position);
+  const defaultLayout = normalizeComponentLayout(
+    createDefaultComponentLayout(radarBase, center, constraints, componentSpec),
+    componentSpec
+  );
+  const layoutMap = normalizeAlternativeComponentLayoutsById(assignment.alternativeComponentLayoutsById, componentSpec);
+  const storedLayout = layoutMap[alternativeId] || null;
+  const components = normalizeComponentLayout(storedLayout || defaultLayout, componentSpec, defaultLayout);
+
+  openComponentEditor(
+    {
+      key: buildAlternativeComponentLayoutKey(plan.id, assignment.id, alternativeId),
+      planId: plan.id,
+      regionId: plan.regionId,
+      regionName: plan.regionName || target.region.name || "",
+      assignmentId: assignment.id,
+      assignment,
+      alternativeId,
+      alternativeIndex: target.positionIndex,
+      code: systemCode,
+      x: radarBase.x,
+      y: radarBase.y,
+      center,
+      components,
+      componentSpec,
+      constraints,
+      color: getSystemColor(systemCode)
+    },
+    {
+      layoutScope: "alternative",
+      alternativeContext: {
+        planId: plan.id,
+        regionId: plan.regionId,
+        assignmentId: assignment.id,
+        alternativeId,
+        alternativeIndex: target.positionIndex
+      }
+    }
+  );
+}
+
+function openComponentEditor(unit, options = {}) {
   if (!unit?.key || !unit.components) {
     return;
   }
@@ -4504,6 +6071,8 @@ function openComponentEditor(unit) {
   state.componentEditor.open = true;
   state.componentEditor.unitKey = unit.key;
   state.componentEditor.planId = unit.planId;
+  state.componentEditor.layoutScope = options.layoutScope || "unit";
+  state.componentEditor.alternativeContext = options.alternativeContext || null;
   state.componentEditor.regionName = unit.regionName || "";
   state.componentEditor.systemCode = unit.code;
   state.componentEditor.componentSpec = unit.componentSpec || null;
@@ -4527,7 +6096,9 @@ function openComponentEditor(unit) {
 
   refs.componentEditorModal.classList.add("open");
   refs.componentEditorModal.setAttribute("aria-hidden", "false");
-  refs.componentEditorTitle.textContent = `${unit.planId} | ${unit.code} Bileşen Düzenleme`;
+  refs.componentEditorTitle.textContent = state.componentEditor.layoutScope === "alternative"
+    ? `${unit.planId} | ${unit.code} ${unit.alternativeId} Alternatif Bileşen Düzenleme`
+    : `${unit.planId} | ${unit.code} Bileşen Düzenleme`;
   syncRadarCoordinateInputs();
   syncBlindSectorTargetOptions();
   renderBlindSectorEditor();
@@ -4538,6 +6109,8 @@ function closeComponentEditor() {
   state.componentEditor.open = false;
   state.componentEditor.dragTarget = null;
   state.componentEditor.componentSpec = null;
+  state.componentEditor.layoutScope = "unit";
+  state.componentEditor.alternativeContext = null;
   state.componentEditor.blindError = "";
   refs.componentEditorModal.classList.remove("open");
   refs.componentEditorModal.setAttribute("aria-hidden", "true");
@@ -4560,16 +6133,59 @@ function saveComponentEditorLayout() {
     return;
   }
 
-  state.componentLayoutsByUnitKey[state.componentEditor.unitKey] = normalizeComponentLayout(
+  const normalizedLayout = normalizeComponentLayout(
     deepClone(state.componentEditor.layout),
     state.componentEditor.componentSpec || null
   );
+  if (state.componentEditor.layoutScope === "alternative") {
+    saveAlternativeComponentEditorLayout(normalizedLayout);
+  } else {
+    state.componentLayoutsByUnitKey[state.componentEditor.unitKey] = normalizedLayout;
+  }
   syncSharedDefendedAssetsStorage();
+  syncDefenseJsonView();
   refs.componentEditorInfo.textContent = "Bileşen düzeni kaydedildi.";
   refs.componentEditorInfo.className = "status";
   closeComponentEditor();
   renderCanvas();
   renderDeploymentMap();
+}
+
+function saveAlternativeComponentEditorLayout(layout) {
+  const context = state.componentEditor.alternativeContext;
+  if (!context) {
+    return;
+  }
+
+  const plan = state.deployments.find((item) => item.id === context.planId || item.regionId === context.regionId);
+  const region = getAllProtectedAssets().find((item) => item.id === plan?.regionId);
+  const assignment = plan?.systems?.find((item) => String(item?.id || "") === String(context.assignmentId));
+  if (!plan || !region || !assignment) {
+    return;
+  }
+
+  const componentSpec = state.componentEditor.componentSpec || getSystemComponentSpec(assignment.code, assignment);
+  const layoutMap = normalizeAlternativeComponentLayoutsById(assignment.alternativeComponentLayoutsById, componentSpec);
+  layoutMap[context.alternativeId] = normalizeComponentLayout(layout, componentSpec);
+  assignment.alternativeComponentLayoutsById = layoutMap;
+
+  const positions = normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions);
+  const positionIndex = positions.findIndex((point, index) => getAlternativePositionId(point, index) === context.alternativeId);
+  const targetIndex = positionIndex >= 0 ? positionIndex : Math.max(0, Math.floor(Number(context.alternativeIndex) || 0));
+  const validation = validateAlternativeDeploymentPoint(region, assignment.code, layout.radar);
+  positions[targetIndex] = {
+    ...(positions[targetIndex] || {}),
+    id: context.alternativeId,
+    ...enrichPointWithTerrain(layout.radar),
+    distanceFromProtectedCenterM: Math.round(validation.distanceM),
+    criteriaMinM: Math.round(validation.minM),
+    criteriaMaxM: Math.round(validation.maxM),
+    withinDeploymentCriteria: validation.valid,
+    selectedAt: positions[targetIndex]?.selectedAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  assignment.alternativeRadarPositions = positions;
+  plan.updatedAt = new Date().toISOString();
 }
 
 function resetComponentEditorLayout() {
@@ -5171,6 +6787,7 @@ function renderDeploymentMap() {
   if (previews.length === 0 && regions.length === 0) {
     drawDeploymentPlaceholder("Gösterim için korunacak varlık oluşturun.");
     refs.deploymentMapInfo.textContent = "Önce en az bir korunacak varlık kaydedin.";
+    syncTerrainScene();
     return;
   }
 
@@ -5227,7 +6844,13 @@ function renderDeploymentMap() {
         continue;
       }
       drawCoverageCircleScreen(
-        { cx: point.x, cy: point.y, blindSectors: [] },
+        {
+          cx: point.x,
+          cy: point.y,
+          sourceHeightM: LOS_RADAR_SOURCE_HEIGHT_M,
+          targetHeightM: getCoverageTargetAltitudeMeters(),
+          blindSectors: []
+        },
         getEirsRadarRangeMeters(),
         mapper,
         "#7fd8ff",
@@ -5239,6 +6862,8 @@ function renderDeploymentMap() {
   for (const preview of previews) {
     drawCenterMarkerScreen(preview.center, mapper);
   }
+
+  const alternativeScreens = drawAlternativeRadarMarkersScreen(previews, mapper);
 
   const unitScreens = [];
   for (const preview of previews) {
@@ -5254,12 +6879,22 @@ function renderDeploymentMap() {
     }
   }
 
-  state.deploymentView.lastRender = { previews, mapper, unitScreens };
+  state.deploymentView.lastRender = { previews, mapper, unitScreens, alternativeScreens };
 
   const coverageLabel = getActiveLayerLabel();
   const systemSummary = summarizePreviewSystems(previews);
   const selected = unitScreens.find((u) => u.key === state.deploymentView.selectedUnitKey);
-  if (selected) {
+  const selectedAlternative = alternativeScreens.find((u) => u.key === state.deploymentView.selectedUnitKey);
+  if (isAlternativeDeploymentSelectionActive()) {
+    const context = getActiveAlternativeDeploymentContext();
+    refs.deploymentMapInfo.textContent = context
+      ? `${coverageLabel} | ${context.assignment.code} alternatif konuş yeri seçimi aktif. Harita üzerinden nokta seçin.`
+      : `${coverageLabel} | Alternatif konuş yeri seçimi aktif. Harita üzerinden nokta seçin.`;
+  } else if (selectedAlternative) {
+    refs.deploymentMapInfo.textContent =
+      `${coverageLabel} | ${selectedAlternative.assignment.code} ${selectedAlternative.alternativeId} alternatif konuş yeri ` +
+      `Koord: (${Math.round(selectedAlternative.position.x)}, ${Math.round(selectedAlternative.position.y)})`;
+  } else if (selected) {
     const planText = selected.unit.planId ? `Plan ${selected.unit.planId}` : "Plan";
     refs.deploymentMapInfo.textContent =
       `${coverageLabel} | ${systemSummary} | ${planText} ${getDeploymentUnitLabel(selected.unit)} ` +
@@ -5270,6 +6905,7 @@ function renderDeploymentMap() {
     refs.deploymentMapInfo.textContent =
       `${coverageLabel} | ${systemSummary} | Bileşen koordinatı için marker üzerine tıklayın.`;
   }
+  syncTerrainScene();
 }
 
 function computeDeploymentMapBounds(previews, regions) {
@@ -5290,6 +6926,11 @@ function computeDeploymentMapBounds(previews, regions) {
     const previewBounds = computeMultiPreviewBounds(previews);
     xs.push(previewBounds.xMin, previewBounds.xMax);
     ys.push(previewBounds.yMin, previewBounds.yMax);
+  }
+
+  for (const point of getAllAlternativeRadarPositions()) {
+    xs.push(point.x);
+    ys.push(point.y);
   }
 
   let xMin = Math.min(...xs);
@@ -5373,11 +7014,14 @@ function drawDeploymentPlaceholder(message) {
 
 function drawDeploymentGrid(mapper) {
   deploymentCtx.save();
-  deploymentCtx.fillStyle = "#0d1713";
-  deploymentCtx.fillRect(0, 0, deploymentCanvas.width, deploymentCanvas.height);
+  const hasTerrainBase = drawTerrainRasterWithMapper(deploymentCtx, deploymentCanvas, mapper);
+  if (!hasTerrainBase) {
+    deploymentCtx.fillStyle = "#0d1713";
+    deploymentCtx.fillRect(0, 0, deploymentCanvas.width, deploymentCanvas.height);
+  }
 
   const step = 120;
-  deploymentCtx.strokeStyle = "rgba(67, 114, 91, 0.25)";
+  deploymentCtx.strokeStyle = hasTerrainBase ? "rgba(222, 246, 231, 0.12)" : "rgba(67, 114, 91, 0.25)";
   deploymentCtx.lineWidth = 1;
   for (let x = 0; x <= deploymentCanvas.width; x += step) {
     deploymentCtx.beginPath();
@@ -5507,6 +7151,11 @@ function drawRegionScreen(region, mapper) {
 }
 
 function drawCoverageCircleScreen(coverage, radiusM, mapper, color, type) {
+  if (shouldUseLineOfSightCoverage()) {
+    drawCoverageLosShapeScreen(coverage, radiusM, mapper, color, type);
+    return;
+  }
+
   const p = mapper.toScreen(coverage.cx, coverage.cy);
   const pxRadius = Math.max(1.5, radiusM / mapper.worldPerPixel);
   drawCoverageShape(
@@ -5558,6 +7207,79 @@ function drawSystemMarkerScreen(unit, mapper, isSelected) {
   return p;
 }
 
+function drawAlternativeRadarMarkersScreen(previews, mapper) {
+  const alternativeScreens = [];
+  for (const target of getAlternativeEditorTargetsForPreviews(previews)) {
+    const active = isAlternativeDeploymentSelectionActive(target.plan.regionId, target.assignment.id) ||
+      state.deploymentView.selectedUnitKey === target.key;
+    const screenPt = drawAlternativeRadarMarkerScreen(
+      target.position,
+      mapper,
+      getSystemColor(target.assignment.code),
+      target.positionIndex + 1,
+      active
+    );
+    alternativeScreens.push({
+      ...target,
+      sx: screenPt.x,
+      sy: screenPt.y
+    });
+  }
+  return alternativeScreens;
+}
+
+function getAlternativeEditorTargetsForPreviews(previews) {
+  const targets = [];
+  for (const preview of previews || []) {
+    const assignments = Array.isArray(preview?.plan?.systems) ? preview.plan.systems : [];
+    for (const assignment of assignments) {
+      const positions = normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions);
+      for (let index = 0; index < positions.length; index += 1) {
+        const alternativeId = getAlternativePositionId(positions[index], index);
+        targets.push({
+          key: buildAlternativeComponentLayoutKey(preview.plan.id, assignment.id, alternativeId),
+          plan: preview.plan,
+          region: preview.region,
+          assignment,
+          position: positions[index],
+          positionIndex: index,
+          alternativeId
+        });
+      }
+    }
+  }
+  return targets;
+}
+
+function drawAlternativeRadarMarkerScreen(point, mapper, color, sequence, active) {
+  const p = mapper.toScreen(point.x, point.y);
+  deploymentCtx.save();
+  deploymentCtx.beginPath();
+  deploymentCtx.arc(p.x, p.y, active ? 7.4 : 5.6, 0, Math.PI * 2);
+  deploymentCtx.fillStyle = point.withinDeploymentCriteria === false ? "#ff8f6b" : "#c5fff4";
+  deploymentCtx.fill();
+  deploymentCtx.strokeStyle = active ? "#ffffff" : color;
+  deploymentCtx.lineWidth = active ? 1.8 : 1.2;
+  deploymentCtx.stroke();
+  deploymentCtx.font = "700 10px Space Grotesk";
+  deploymentCtx.fillStyle = point.withinDeploymentCriteria === false ? "#ffb199" : "#c5fff4";
+  deploymentCtx.fillText(`ALT${sequence}`, p.x + 7, p.y + 12);
+  deploymentCtx.restore();
+
+  return p;
+}
+
+function getAllAlternativeRadarPositions() {
+  const points = [];
+  for (const plan of state.deployments) {
+    const assignments = Array.isArray(plan?.systems) ? plan.systems : [];
+    for (const assignment of assignments) {
+      points.push(...normalizeAlternativeRadarPositions(assignment.alternativeRadarPositions));
+    }
+  }
+  return points;
+}
+
 function getDeploymentUnitLabel(unit) {
   const ffsMunitionCodes = Array.isArray(unit?.ffsMunitionCodes) && unit.ffsMunitionCodes.length
     ? unit.ffsMunitionCodes
@@ -5573,8 +7295,168 @@ function getDeploymentUnitLabel(unit) {
   return suffix ? `${unit.code}-${unit.sequence} ${suffix}` : `${unit.code}-${unit.sequence}`;
 }
 
-function drawCoverageCircleWorld(targetCtx, x, y, radiusM, color, type, lineWidth, blindSectors = []) {
+function drawCoverageCircleWorld(targetCtx, x, y, radiusM, color, type, lineWidth, blindSectors = [], options = {}) {
+  if (shouldUseLineOfSightCoverage()) {
+    drawCoverageLosShapeWorld(
+      targetCtx,
+      {
+        ...options,
+        cx: x,
+        cy: y,
+        blindSectors
+      },
+      radiusM,
+      color,
+      type,
+      lineWidth
+    );
+    return;
+  }
+
   drawCoverageShape(targetCtx, x, y, radiusM, color, type, lineWidth, blindSectors);
+}
+
+function shouldUseLineOfSightCoverage() {
+  return Boolean(state.terrain?.elevations?.length);
+}
+
+function drawCoverageLosShapeScreen(coverage, radiusM, mapper, color, type) {
+  const rings = getLineOfSightCoverageRings(coverage, radiusM, coverage.blindSectors);
+  drawCoverageLosRings(
+    deploymentCtx,
+    rings.map((ring) => ring.map((point) => mapper.toScreen(point.x, point.y))),
+    color,
+    type,
+    1.5
+  );
+}
+
+function drawCoverageLosShapeWorld(targetCtx, coverage, radiusM, color, type, lineWidth) {
+  const rings = getLineOfSightCoverageRings(coverage, radiusM, coverage.blindSectors);
+  drawCoverageLosRings(targetCtx, rings, color, type, lineWidth);
+}
+
+function drawCoverageLosRings(targetCtx, rings, color, type, lineWidth) {
+  if (!rings.length) {
+    return;
+  }
+
+  targetCtx.save();
+  targetCtx.strokeStyle = color;
+  targetCtx.fillStyle = type === "radar" ? hexToRgba(color, 0.1) : "rgba(255, 143, 83, 0.13)";
+  targetCtx.lineWidth = lineWidth;
+
+  for (const ring of rings) {
+    if (ring.length < 3) {
+      continue;
+    }
+    targetCtx.beginPath();
+    targetCtx.moveTo(ring[0].x, ring[0].y);
+    for (let index = 1; index < ring.length; index += 1) {
+      targetCtx.lineTo(ring[index].x, ring[index].y);
+    }
+    targetCtx.closePath();
+    targetCtx.fill();
+    targetCtx.stroke();
+  }
+
+  targetCtx.restore();
+}
+
+function getLineOfSightCoverageRings(coverage, radiusM, blindSectors = []) {
+  const radius = numberOrZero(radiusM);
+  if (!(radius > 0) || !state.terrain?.elevations?.length) {
+    return [];
+  }
+
+  const source = {
+    x: numberOrZero(coverage?.cx),
+    y: numberOrZero(coverage?.cy)
+  };
+  const sourceHeightM = Math.max(0, numberOrZero(coverage?.sourceHeightM));
+  const targetHeightM = Math.max(0, numberOrZero(coverage?.targetHeightM));
+  const cacheKey = buildLineOfSightCoverageCacheKey(source, radius, sourceHeightM, targetHeightM, blindSectors);
+  const cached = state.losCoverageCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const rings = [];
+  for (const [startDeg, endDeg] of getVisibleBearingSegments(blindSectors)) {
+    const span = endDeg - startDeg;
+    if (!(span > 0)) {
+      continue;
+    }
+    const points = [{ x: source.x, y: source.y }];
+    const steps = Math.max(1, Math.ceil(span / LOS_ANGULAR_STEP_DEG));
+    for (let stepIndex = 0; stepIndex <= steps; stepIndex += 1) {
+      const bearing = startDeg + (span * stepIndex) / steps;
+      const visibleDistance = computeLineOfSightVisibleDistance(
+        source,
+        radius,
+        bearing,
+        sourceHeightM,
+        targetHeightM
+      );
+      points.push(getPointOnRadius(source, visibleDistance, bearing));
+    }
+    points.push({ x: source.x, y: source.y });
+    rings.push(points);
+  }
+
+  state.losCoverageCache.set(cacheKey, rings);
+  if (state.losCoverageCache.size > 300) {
+    state.losCoverageCache.clear();
+    state.losCoverageCache.set(cacheKey, rings);
+  }
+  return rings;
+}
+
+function computeLineOfSightVisibleDistance(source, radiusM, bearingDeg, sourceHeightM, targetHeightM) {
+  const radius = numberOrZero(radiusM);
+  if (!(radius > 0)) {
+    return 0;
+  }
+
+  const sourceTerrainZ = sampleTerrainElevation(source.x, source.y);
+  const sourceZ = sourceTerrainZ + Math.max(0, numberOrZero(sourceHeightM));
+  const sampleCount = Math.max(8, Math.min(LOS_RADIAL_SAMPLES, Math.ceil(radius / 1500)));
+  let maxBlockingAngle = Number.NEGATIVE_INFINITY;
+  let visibleDistance = radius;
+
+  for (let index = 1; index <= sampleCount; index += 1) {
+    const distanceM = (radius * index) / sampleCount;
+    const point = getPointOnRadius(source, distanceM, bearingDeg);
+    const terrainZ = sampleTerrainElevation(point.x, point.y);
+    const curvatureDropM = (distanceM * distanceM) / (2 * LOS_EFFECTIVE_EARTH_RADIUS_M);
+    const curvedTerrainZ = terrainZ - curvatureDropM;
+    const targetAngle = (curvedTerrainZ + Math.max(0, numberOrZero(targetHeightM)) - sourceZ) / distanceM;
+    const blockingAngle = (curvedTerrainZ + LOS_CLEARANCE_M - sourceZ) / distanceM;
+
+    if (targetAngle + 1e-9 < maxBlockingAngle) {
+      visibleDistance = (radius * (index - 1)) / sampleCount;
+      break;
+    }
+    maxBlockingAngle = Math.max(maxBlockingAngle, blockingAngle);
+  }
+
+  return clampNumber(visibleDistance, 0, radius);
+}
+
+function buildLineOfSightCoverageCacheKey(source, radiusM, sourceHeightM, targetHeightM, blindSectors = []) {
+  const terrainKey = `${state.terrain?.name || "terrain"}:${state.terrain?.width || 0}x${state.terrain?.height || 0}`;
+  const blindKey = normalizeBlindSectors(blindSectors)
+    .map(([start, end]) => `${Math.round(start)}-${Math.round(end)}`)
+    .join(",");
+  return [
+    terrainKey,
+    Math.round(source.x),
+    Math.round(source.y),
+    Math.round(radiusM),
+    Math.round(sourceHeightM),
+    Math.round(targetHeightM),
+    blindKey
+  ].join("|");
 }
 
 function drawCoverageShape(targetCtx, x, y, radius, color, type, lineWidth, blindSectors = []) {
@@ -5827,7 +7709,8 @@ function computeRegionCenter(region) {
     return { x: 0, y: 0 };
   }
   if (region.type === "point") {
-    return { x: region.points[0].x, y: region.points[0].y };
+    const point = enrichPointWithTerrain(region.points[0]);
+    return { x: point.x, y: point.y, z: point.z, lat: point.lat, lon: point.lon };
   }
 
   let sx = 0;
@@ -5836,10 +7719,11 @@ function computeRegionCenter(region) {
     sx += p.x;
     sy += p.y;
   }
-  return {
+  const center = {
     x: sx / region.points.length,
     y: sy / region.points.length
   };
+  return enrichPointWithTerrain(center);
 }
 
 function getRegionBounds(region) {
@@ -5872,6 +7756,8 @@ function getCoverageItemsForUnit(unit) {
         radiusM: r,
         cx: unit.components.radar.x,
         cy: unit.components.radar.y,
+        sourceHeightM: LOS_RADAR_SOURCE_HEIGHT_M,
+        targetHeightM: getCoverageTargetAltitudeMeters(),
         blindSectors: normalizeBlindSectors(unit.components.radar.blindSectors)
       });
     }
@@ -5890,6 +7776,8 @@ function getCoverageItemsForUnit(unit) {
           radiusM: r,
           cx: f.x,
           cy: f.y,
+          sourceHeightM: LOS_WEZ_SOURCE_HEIGHT_M,
+          targetHeightM: getCoverageTargetAltitudeMeters(),
           blindSectors: normalizeBlindSectors(f.blindSectors)
         });
       }
@@ -5931,7 +7819,10 @@ function getActiveLayerLabel() {
   if (state.coverageLayers.maxCriteria) {
     labels.push("Max");
   }
-  return labels.length ? labels.join("+") : "Katman Kapalı";
+  const base = labels.length ? labels.join("+") : "Katman Kapalı";
+  return state.coverageLayers.radar || state.coverageLayers.wez
+    ? `${base} @ ${Math.round(numberOrZero(state.coverageTargetAltitudeFt || DEFAULT_COVERAGE_ALTITUDE_FT))} ft`
+    : base;
 }
 
 function computeMultiPreviewBounds(previews) {
@@ -6454,26 +8345,28 @@ function buildScenarioReportModel(payload) {
     const coords = geometry.coordinates;
     const isEirs = String(asset?.id || "").toUpperCase().startsWith("E") || String(asset?.assetClass || "").toLowerCase().includes("eirs");
     if (geometry.type === "Point" && coords && typeof coords === "object" && !Array.isArray(coords)) {
+      const point = toReportPosition(coords);
       return {
         userId: String(asset?.name || asset?.id || "-"),
         systemId: String(asset?.id || "-"),
         hva: String(asset?.HVA_value ?? "-"),
         kind: "Nokta",
-        coordText: `${formatReportNumber(coords.x)}, ${formatReportNumber(coords.y)}`,
-        point: { x: Number(coords.x) || 0, y: Number(coords.y) || 0 },
+        coordText: formatReportPosition(point),
+        point,
         polygon: [],
         isEirs
       };
     }
     const polygon = (Array.isArray(coords) ? coords : [])
       .filter((item) => item && typeof item === "object")
-      .map((point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 }));
+      .map((point) => toReportPosition(point))
+      .filter(Boolean);
     return {
       userId: String(asset?.name || asset?.id || "-"),
       systemId: String(asset?.id || "-"),
       hva: String(asset?.HVA_value ?? "-"),
       kind: "Bölge",
-      coordText: polygon.map((point) => `(${formatReportNumber(point.x)}, ${formatReportNumber(point.y)})`).join(", "),
+      coordText: polygon.map((point) => `(${formatReportPosition(point)})`).join(", "),
       point: null,
       polygon,
       isEirs
@@ -6487,8 +8380,11 @@ function buildScenarioReportModel(payload) {
   const hssUnits = (Array.isArray(payload?.deployedUnits) ? payload.deployedUnits : []).map((unit) => {
     const radar = unit?.components?.radar && typeof unit.components.radar === "object" ? unit.components.radar : {};
     const position = radar?.position && typeof radar.position === "object"
-      ? { x: Number(radar.position.x) || 0, y: Number(radar.position.y) || 0 }
+      ? toReportPosition(radar.position)
       : null;
+    const alternatives = (Array.isArray(unit?.alternativeDeploymentLayouts) ? unit.alternativeDeploymentLayouts : [])
+      .map((layout, index) => buildReportAlternativeHssLayout(layout, index))
+      .filter(Boolean);
     const assetSystemId = deploymentPlanById.get(String(unit?.planId || "")) || "-";
     const assetUser = assets.find((item) => item.systemId === assetSystemId)?.userId || assetSystemId;
     return {
@@ -6498,6 +8394,7 @@ function buildScenarioReportModel(payload) {
       assetUserId: assetUser,
       ffsCount: Array.isArray(unit?.components?.ffs) ? unit.components.ffs.length : 0,
       position,
+      alternatives,
       hvaValue: String(radar?.HVA_value ?? "-")
     };
   });
@@ -6654,11 +8551,28 @@ function buildScenarioReportFlowLines(report) {
     }
     for (const unit of related) {
       lines.push({
-        text: `[KV: ${unit.assetUserId}] [${unit.ffsCount} x ${code === "HSS-N" ? "Top" : "FFS"}] [KV-HSS Sis.ID İlişkisi: (${unit.assetSystemId} - ${unit.unitId})], [HVA Değ: ${unit.hvaValue}], [Koordinat: ${unit.position ? `${formatReportNumber(unit.position.x)}, ${formatReportNumber(unit.position.y)}` : "-"}]`,
+        text: `[KV: ${unit.assetUserId}] [${unit.ffsCount} x ${code === "HSS-N" ? "Top" : "FFS"}] [KV-HSS Sis.ID İlişkisi: (${unit.assetSystemId} - ${unit.unitId})], [HVA Değ: ${unit.hvaValue}], [Koordinat: ${formatReportPosition(unit.position)}]`,
         fontSize: 8.5,
         indent: 18,
         gapAfter: 2
       });
+      for (const alternative of unit.alternatives || []) {
+        const componentParts = [
+          `Radar: ${formatReportPosition(alternative.radar)}`,
+          alternative.kkm ? `KKM: ${formatReportPosition(alternative.kkm)}` : null,
+          alternative.akr ? `AKR: ${formatReportPosition(alternative.akr)}` : null,
+          alternative.eo ? `EO: ${formatReportPosition(alternative.eo)}` : null,
+          alternative.ffs.length
+            ? `FFS: ${alternative.ffs.map((item) => `${item.label} ${formatReportPosition(item.position)}`).join("; ")}`
+            : null
+        ].filter(Boolean);
+        lines.push({
+          text: `[Alternatif Konuş ${alternative.id}] [${componentParts.join("] [")}]`,
+          fontSize: 8.1,
+          indent: 28,
+          gapAfter: 2
+        });
+      }
     }
   }
 
@@ -6794,11 +8708,51 @@ function formatReportNumber(value) {
   return num.toFixed(2);
 }
 
+function toReportPosition(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  return {
+    x: Number(value.x) || 0,
+    y: Number(value.y) || 0,
+    z: Number(value.z ?? value.elevationM) || 0
+  };
+}
+
+function formatReportPosition(point) {
+  if (!point) {
+    return "-";
+  }
+  return `${formatReportNumber(point.x)}, ${formatReportNumber(point.y)}, ${formatReportNumber(point.z)} m`;
+}
+
+function buildReportAlternativeHssLayout(layout, index) {
+  const components = layout?.components && typeof layout.components === "object" ? layout.components : {};
+  const radar = toReportPosition(components.radar?.position || layout?.sourceRadarPosition);
+  if (!radar) {
+    return null;
+  }
+  const ffs = (Array.isArray(components.ffs) ? components.ffs : [])
+    .map((item, ffsIndex) => ({
+      label: `FFS${ffsIndex + 1}`,
+      position: toReportPosition(item?.position)
+    }))
+    .filter((item) => item.position);
+  return {
+    id: String(layout?.id || `ALT${String(index + 1).padStart(2, "0")}`),
+    radar,
+    kkm: toReportPosition(components.kkm?.position),
+    akr: toReportPosition(components.akr?.position),
+    eo: toReportPosition(components.eo?.position),
+    ffs
+  };
+}
+
 function toReportPoint(value) {
   if (!Array.isArray(value) || value.length < 2) {
     return null;
   }
-  return { x: Number(value[0]) || 0, y: Number(value[1]) || 0 };
+  return { x: Number(value[0]) || 0, y: Number(value[1]) || 0, z: Number(value[2]) || 0 };
 }
 
 function formatReportPoint3(values) {
@@ -6878,6 +8832,11 @@ function drawReportMap(ctx, report, rect, scale) {
   for (const unit of report.hssUnits) {
     if (unit.position) {
       points.push(unit.position);
+    }
+    for (const alternative of unit.alternatives || []) {
+      if (alternative.radar) {
+        points.push(alternative.radar);
+      }
     }
   }
   for (const platform of report.platforms) {
@@ -7069,6 +9028,28 @@ function drawReportMap(ctx, report, rect, scale) {
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
+  }
+
+  for (const unit of report.hssUnits) {
+    for (const alternative of unit.alternatives || []) {
+      if (!alternative.radar) {
+        continue;
+      }
+      const mapped = mapPoint(alternative.radar);
+      ctx.save();
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = systemColors[unit.systemCode] || "#555";
+      ctx.lineWidth = 1.2 * scale;
+      ctx.beginPath();
+      ctx.arc(mapped.x, mapped.y, 3.7 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      drawCanvasText(ctx, "ALT", mapped.x + 5, mapped.y - 8, 6.5 * scale, {
+        bold: true,
+        color: systemColors[unit.systemCode] || "#555"
+      });
+      ctx.restore();
+    }
   }
 
   drawReportNorthArrow(ctx, rect, scale);

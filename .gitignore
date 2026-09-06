@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+**/.DS_Store
+__pycache__/
+*.pyc
+.codex/
+data/terrain/output_hh.tif
+data/terrain/output_hh_color.tif
