@@ -5171,6 +5171,8 @@ function buildEirsTechnicalExport() {
   const radar = source?.technical?.radar || {};
   return {
     radar: {
+      minRcsM2: radar.minRcsM2,
+      maxRcsM2: radar.maxRcsM2,
       minTrackRangeM: Math.round(numberOrZero(radar?.trackRange?.minTrackRangeM)),
       illumCapacity: 0,
       setupTimeIllTrackSec: Math.max(0, Math.round(numberOrZero(radar?.setupTimeIllTrackSec))),
@@ -5217,6 +5219,8 @@ function buildSystemCatalogExport(code) {
     technical: {
       radar: {
         heightAboveGroundM: item?.technical?.radar?.heightAboveGroundM,
+        minRcsM2: item?.technical?.radar?.minRcsM2,
+        maxRcsM2: item?.technical?.radar?.maxRcsM2,
         minTrackRangeM: Math.round(numberOrZero(item?.technical?.radar?.trackRange?.minTrackRangeM)),
         illumCapacity: Math.max(0, Math.round(numberOrZero(item?.technical?.radar?.illumCapacity))),
         setupTimeIllTrackSec: Math.max(0, Math.round(numberOrZero(item?.technical?.radar?.setupTimeIllTrackSec))),
@@ -5233,6 +5237,8 @@ function buildSystemCatalogExport(code) {
       ...(item?.technical?.akr
         ? {
             akr: {
+              minRcsM2: item?.technical?.akr?.minRcsM2,
+              maxRcsM2: item?.technical?.akr?.maxRcsM2,
               minTrackRangeM: Math.round(numberOrZero(item?.technical?.akr?.minTrackRangeM)),
               illumCapacity: Math.max(0, Math.round(numberOrZero(item?.technical?.akr?.illumCapacity))),
               setupTimeIllTrackSec: Math.max(0, Math.round(numberOrZero(item?.technical?.akr?.setupTimeIllTrackSec))),

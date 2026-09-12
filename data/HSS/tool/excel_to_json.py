@@ -66,6 +66,10 @@ REQUIRED_HEADERS = [
 ]
 
 OPTIONAL_HEADERS = [
+    "radar_min_rcs_m2",
+    "radar_max_rcs_m2",
+    "akr_min_rcs_m2",
+    "akr_max_rcs_m2",
     "ffs_height_above_ground_m",
     "radar_height_above_ground_m",
     "Radar_LOS_needed",
@@ -259,6 +263,33 @@ def apply_component_heights(root: dict, records: list[dict[str, str]], component
             raise ValueError(f"Missing {component} height for {system['code']}")
     for system in root["systems"]:
         system.setdefault("technical", {}).setdefault(component, {})["heightAboveGroundM"] = heights[system["code"]]
+
+
+def apply_radar_rcs(root: dict, records: list[dict[str, str]], component: str = "radar") -> None:
+    bounds = {}
+    for rec in records:
+        code = rec["system_code"].strip()
+        if code in bounds:
+            raise ValueError(f"Duplicate system code: {code}")
+        if component == "akr" and not any(s["code"] == code and "akr" in s.get("technical", {}) for s in root["systems"]):
+            continue
+        minimum = parse_num(rec.get(f"{component}_min_rcs_m2"))
+        maximum = parse_num(rec.get(f"{component}_max_rcs_m2"))
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0
+               for v in (minimum, maximum)):
+            raise ValueError(f"Invalid radar RCS bounds for {code}")
+        if minimum > maximum:
+            raise ValueError(f"Minimum radar RCS exceeds maximum for {code}")
+        bounds[code] = {"minRcsM2": minimum, "maxRcsM2": maximum}
+    for system in root["systems"]:
+        if component == "akr" and "akr" not in system.get("technical", {}):
+            continue
+        if system["code"] not in bounds:
+            raise ValueError(f"Missing radar RCS bounds for {system['code']}")
+    for system in root["systems"]:
+        if component == "akr" and "akr" not in system.get("technical", {}):
+            continue
+        system.setdefault("technical", {}).setdefault(component, {}).update(bounds[system["code"]])
 
 
 def with_min_max(count_value: object, min_value: object, max_value: object) -> tuple[object, object, object]:
@@ -579,6 +610,8 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Convert air_defense_master.xlsx into JSON files.")
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--radar-rcs-only", action="store_true",
+                      help="Update only radar minimum/maximum RCS (square metres) in existing systems JSON")
     mode.add_argument("--ffs-heights-only", action="store_true",
                       help="Update only FFS height above ground (metres) in the existing systems JSON")
     mode.add_argument("--radar-heights-only", action="store_true",
@@ -618,6 +651,14 @@ def main() -> None:
     if not records:
         raise ValueError("No valid system rows found in master sheet")
 
+    if args.radar_rcs_only:
+        root = json.loads(args.systems_json.read_text(encoding="utf-8"))
+        apply_radar_rcs(root, records)
+        apply_radar_rcs(root, records, "akr")
+        args.systems_json.write_text(json.dumps(root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated radar RCS bounds: {args.systems_json}")
+        return
+
     if args.ffs_heights_only:
         root = json.loads(args.systems_json.read_text(encoding="utf-8"))
         apply_ffs_heights(root, records)
@@ -643,6 +684,8 @@ def main() -> None:
     apply_system_los(systems_root, records)
     apply_radar_heights(systems_root, records)
     apply_ffs_heights(systems_root, records)
+    apply_radar_rcs(systems_root, records)
+    apply_radar_rcs(systems_root, records, "akr")
     deployment_root = build_deployment_json(records)
     munitions_root = build_munitions_json(records)
     apply_munition_costs(munitions_root, args.xlsx)

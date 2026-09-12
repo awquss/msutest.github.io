@@ -64,7 +64,9 @@
             "min": 0,
             "max": 80
           },
-          "heightAboveGroundM": 4
+          "heightAboveGroundM": 4,
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "engagement": {
           "effectiveRangeKm": 4,
@@ -160,7 +162,9 @@
             "min": 0,
             "max": 60
           },
-          "heightAboveGroundM": 5
+          "heightAboveGroundM": 5,
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "engagement": {
           "effectiveRangeKm": 15,
@@ -247,7 +251,9 @@
             "min": 0,
             "max": 80
           },
-          "heightAboveGroundM": 7
+          "heightAboveGroundM": 7,
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "engagement": {
           "effectiveRangeKm": 25,
@@ -337,7 +343,9 @@
             "min": 0,
             "max": 80
           },
-          "heightAboveGroundM": 8
+          "heightAboveGroundM": 8,
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "akr": {
           "minTrackRangeM": 1000,
@@ -351,7 +359,9 @@
           "elevationDeg": {
             "min": 0,
             "max": 90
-          }
+          },
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "engagement": {
           "effectiveRangeKm": 150,
@@ -454,7 +464,9 @@
             "min": 0,
             "max": 80
           },
-          "heightAboveGroundM": 8
+          "heightAboveGroundM": 8,
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "akr": {
           "minTrackRangeM": 1000,
@@ -468,7 +480,9 @@
           "elevationDeg": {
             "min": 0,
             "max": 90
-          }
+          },
+          "minRcsM2": 0,
+          "maxRcsM2": 100
         },
         "engagement": {
           "effectiveRangeKm": 50,
