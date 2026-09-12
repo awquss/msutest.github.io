@@ -5200,6 +5200,8 @@ function buildSystemCatalogExport(code) {
   return {
     code,
     role: item.role || "",
+    Radar_LOS_needed: item.Radar_LOS_needed,
+    FSS_LOS_needed: item.FSS_LOS_needed,
     components: {
       radarCount: componentSpec.radarCount,
       radarHVAValue: componentSpec.radarHVAValue,
@@ -5319,6 +5321,7 @@ function buildMunitionCatalogExport(code) {
     code: item.code,
     name: item.name || item.code,
     systemCode: item.systemCode || "",
+    Cost: item.Cost,
     illReq: Math.max(0, Math.min(1, Math.round(numberOrZero(item?.illReq)))),
     kinematics: {
       speedMps: numberOrZero(item?.kinematics?.speedMps)

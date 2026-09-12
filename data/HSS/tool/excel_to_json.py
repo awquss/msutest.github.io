@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import posixpath
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -64,6 +66,8 @@ REQUIRED_HEADERS = [
 ]
 
 OPTIONAL_HEADERS = [
+    "Radar_LOS_needed",
+    "FSS_LOS_needed",
     "radar_hva_value",
     "akr_count",
     "eo_count",
@@ -111,7 +115,7 @@ def col_index(cell_ref: str) -> int:
     return idx - 1
 
 
-def read_sheet_rows(xlsx_path: Path) -> list[list[str]]:
+def read_sheet_rows(xlsx_path: Path, sheet_name: str | None = None) -> list[list[str]]:
     with zipfile.ZipFile(xlsx_path) as zf:
         shared_strings = []
         if "xl/sharedStrings.xml" in zf.namelist():
@@ -120,7 +124,18 @@ def read_sheet_rows(xlsx_path: Path) -> list[list[str]]:
                 parts = [t.text or "" for t in si.findall(".//a:t", NS)]
                 shared_strings.append("".join(parts))
 
-        wroot = ET.fromstring(zf.read("xl/worksheets/sheet1.xml"))
+        sheet_path = "xl/worksheets/sheet1.xml"
+        if sheet_name is not None:
+            workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+            sheet = next((s for s in workbook.findall("a:sheets/a:sheet", NS)
+                          if s.get("name") == sheet_name), None)
+            if sheet is None:
+                raise ValueError(f"Missing worksheet: {sheet_name}")
+            rel_id = sheet.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+            target = next(r.get("Target") for r in rels if r.get("Id") == rel_id)
+            sheet_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+        wroot = ET.fromstring(zf.read(sheet_path))
         sheet_data = wroot.find("a:sheetData", NS)
         if sheet_data is None:
             return []
@@ -150,6 +165,30 @@ def read_sheet_rows(xlsx_path: Path) -> list[list[str]]:
         return rows
 
 
+def apply_munition_costs(root: dict, xlsx_path: Path) -> None:
+    """Apply USD unit costs by stable munition code, leaving all other fields intact."""
+    rows = read_sheet_rows(xlsx_path, "munition_costs")
+    if not rows or rows[0][:2] != ["munition_code", "Cost"]:
+        raise ValueError("munition_costs must start with munition_code and Cost columns")
+    costs = {}
+    for row in rows[1:]:
+        if not row or not row[0].strip():
+            continue
+        code = row[0].strip()
+        value = parse_num(row[1] if len(row) > 1 else None)
+        if code in costs:
+            raise ValueError(f"Duplicate munition cost: {code}")
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"Invalid USD cost for {code}: {value!r}")
+        costs[code] = value
+    for munition in root["munitions"]:
+        if munition["code"] not in costs:
+            raise ValueError(f"Missing USD cost for {munition['code']}")
+    for munition in root["munitions"]:
+        munition["Cost"] = costs[munition["code"]]
+    root.setdefault("meta", {}).setdefault("units", {})["Cost"] = "USD"
+
+
 def normalize_records(rows: list[list[str]]) -> list[dict[str, str]]:
     if not rows:
         return []
@@ -168,6 +207,30 @@ def normalize_records(rows: list[list[str]]) -> list[dict[str, str]]:
         if str(rec.get("system_code", "")).strip():
             records.append(rec)
     return records
+
+
+def parse_bool(value: object) -> bool:
+    text = str(value).strip().lower()
+    if text in ("1", "true"):
+        return True
+    if text in ("0", "false"):
+        return False
+    raise ValueError(f"Expected boolean (1/0 or true/false), got {value!r}")
+
+
+def apply_system_los(root: dict, records: list[dict[str, str]]) -> None:
+    flags = {}
+    for rec in records:
+        code = rec["system_code"].strip()
+        if code in flags:
+            raise ValueError(f"Duplicate system code: {code}")
+        flags[code] = {field: parse_bool(rec.get(field))
+                       for field in ("Radar_LOS_needed", "FSS_LOS_needed")}
+    for system in root["systems"]:
+        if system["code"] not in flags:
+            raise ValueError(f"Missing LOS values for {system['code']}")
+    for system in root["systems"]:
+        system.update(flags[system["code"]])
 
 
 def with_min_max(count_value: object, min_value: object, max_value: object) -> tuple[object, object, object]:
@@ -487,6 +550,11 @@ def main() -> None:
     default_munitions = script_dir.parent / "air_defense_munitions.json"
 
     parser = argparse.ArgumentParser(description="Convert air_defense_master.xlsx into JSON files.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--los-only", action="store_true",
+                      help="Update only boolean LOS fields in the existing systems JSON")
+    mode.add_argument("--costs-only", action="store_true",
+                        help="Update only USD costs in the existing munitions JSON from munition_costs")
     parser.add_argument("--xlsx", type=Path, default=default_xlsx, help="Master Excel file path")
     parser.add_argument("--systems-json", type=Path, default=default_systems, help="Output systems JSON path")
     parser.add_argument(
@@ -506,14 +574,30 @@ def main() -> None:
     if not args.xlsx.exists():
         raise FileNotFoundError(f"Excel file not found: {args.xlsx}")
 
+    if args.costs_only:
+        root = json.loads(args.munitions_json.read_text(encoding="utf-8"))
+        apply_munition_costs(root, args.xlsx)
+        args.munitions_json.write_text(json.dumps(root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated USD costs: {args.munitions_json}")
+        return
+
     rows = read_sheet_rows(args.xlsx)
     records = normalize_records(rows)
     if not records:
         raise ValueError("No valid system rows found in master sheet")
 
+    if args.los_only:
+        root = json.loads(args.systems_json.read_text(encoding="utf-8"))
+        apply_system_los(root, records)
+        args.systems_json.write_text(json.dumps(root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated LOS fields: {args.systems_json}")
+        return
+
     systems_root = build_systems_json(records)
+    apply_system_los(systems_root, records)
     deployment_root = build_deployment_json(records)
     munitions_root = build_munitions_json(records)
+    apply_munition_costs(munitions_root, args.xlsx)
 
     args.systems_json.write_text(json.dumps(systems_root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     args.deployment_json.write_text(

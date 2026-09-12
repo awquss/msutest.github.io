@@ -108,7 +108,9 @@
       },
       "compatibleMunitions": [
         "MIS_HSS_N"
-      ]
+      ],
+      "Radar_LOS_needed": true,
+      "FSS_LOS_needed": true
     },
     {
       "id": "ADS_HSS-A",
@@ -187,7 +189,9 @@
       "compatibleMunitions": [
         "MIS_HSS_A"
       ],
-      "note": "Tek arac kabulu: tum bilesenler ayni platformda"
+      "note": "Tek arac kabulu: tum bilesenler ayni platformda",
+      "Radar_LOS_needed": true,
+      "FSS_LOS_needed": true
     },
     {
       "id": "ADS_HSS-O",
@@ -267,7 +271,9 @@
       },
       "compatibleMunitions": [
         "MIS_HSS_O"
-      ]
+      ],
+      "Radar_LOS_needed": true,
+      "FSS_LOS_needed": false
     },
     {
       "id": "ADS_HSS-U",
@@ -378,7 +384,9 @@
       "compatibleMunitions": [
         "MIS_HSS_U",
         "MIS_HSS_U_BLK1"
-      ]
+      ],
+      "Radar_LOS_needed": true,
+      "FSS_LOS_needed": false
     },
     {
       "id": "ADS_HSS-F",
@@ -488,7 +496,9 @@
       },
       "compatibleMunitions": [
         "MIS_HSS_F"
-      ]
+      ],
+      "Radar_LOS_needed": true,
+      "FSS_LOS_needed": false
     }
   ]
 }

@@ -6,7 +6,8 @@
     "units": {
       "distance": "km",
       "altitude": "km",
-      "speed": "m/s"
+      "speed": "m/s",
+      "Cost": "USD"
     }
   },
   "munitions": [
@@ -27,7 +28,8 @@
         "maxEffRangeKm": 3.2,
         "minAltitudeKm": 0.1,
         "maxAltitudeKm": 4
-      }
+      },
+      "Cost": 1000
     },
     {
       "code": "MIS_HSS_A",
@@ -46,7 +48,8 @@
         "maxEffRangeKm": 12,
         "minAltitudeKm": 0.5,
         "maxAltitudeKm": 8
-      }
+      },
+      "Cost": 500000
     },
     {
       "code": "MIS_HSS_O",
@@ -65,7 +68,8 @@
         "maxEffRangeKm": 20,
         "minAltitudeKm": 0.5,
         "maxAltitudeKm": 15
-      }
+      },
+      "Cost": 1500000
     },
     {
       "code": "MIS_HSS_U",
@@ -87,7 +91,8 @@
         "maxEffRangeKm": 120,
         "minAltitudeKm": 1,
         "maxAltitudeKm": 35
-      }
+      },
+      "Cost": 2000000
     },
     {
       "code": "MIS_HSS_U_BLK1",
@@ -109,7 +114,8 @@
         "maxEffRangeKm": 56,
         "minAltitudeKm": 1,
         "maxAltitudeKm": 20
-      }
+      },
+      "Cost": 1500000
     },
     {
       "code": "MIS_HSS_F",
@@ -131,7 +137,8 @@
         "maxEffRangeKm": 40,
         "minAltitudeKm": 1,
         "maxAltitudeKm": 35
-      }
+      },
+      "Cost": 3000000
     }
   ]
 }
