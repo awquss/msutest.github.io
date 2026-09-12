@@ -66,6 +66,8 @@ REQUIRED_HEADERS = [
 ]
 
 OPTIONAL_HEADERS = [
+    "ffs_height_above_ground_m",
+    "radar_height_above_ground_m",
     "Radar_LOS_needed",
     "FSS_LOS_needed",
     "radar_hva_value",
@@ -231,6 +233,32 @@ def apply_system_los(root: dict, records: list[dict[str, str]]) -> None:
             raise ValueError(f"Missing LOS values for {system['code']}")
     for system in root["systems"]:
         system.update(flags[system["code"]])
+
+
+def apply_radar_heights(root: dict, records: list[dict[str, str]]) -> None:
+    apply_component_heights(root, records, "radar")
+
+
+def apply_ffs_heights(root: dict, records: list[dict[str, str]]) -> None:
+    apply_component_heights(root, records, "ffs")
+
+
+def apply_component_heights(root: dict, records: list[dict[str, str]], component: str) -> None:
+    """Copy height above local ground in metres without changing terrain elevation."""
+    heights = {}
+    for rec in records:
+        code = rec["system_code"].strip()
+        if code in heights:
+            raise ValueError(f"Duplicate system code: {code}")
+        height = parse_num(rec.get(f"{component}_height_above_ground_m"))
+        if not isinstance(height, (int, float)) or not math.isfinite(height) or height < 0:
+            raise ValueError(f"Invalid {component} height in metres for {code}: {height!r}")
+        heights[code] = height
+    for system in root["systems"]:
+        if system["code"] not in heights:
+            raise ValueError(f"Missing {component} height for {system['code']}")
+    for system in root["systems"]:
+        system.setdefault("technical", {}).setdefault(component, {})["heightAboveGroundM"] = heights[system["code"]]
 
 
 def with_min_max(count_value: object, min_value: object, max_value: object) -> tuple[object, object, object]:
@@ -551,6 +579,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Convert air_defense_master.xlsx into JSON files.")
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--ffs-heights-only", action="store_true",
+                      help="Update only FFS height above ground (metres) in the existing systems JSON")
+    mode.add_argument("--radar-heights-only", action="store_true",
+                      help="Update only radar height above ground (metres) in the existing systems JSON")
     mode.add_argument("--los-only", action="store_true",
                       help="Update only boolean LOS fields in the existing systems JSON")
     mode.add_argument("--costs-only", action="store_true",
@@ -586,6 +618,20 @@ def main() -> None:
     if not records:
         raise ValueError("No valid system rows found in master sheet")
 
+    if args.ffs_heights_only:
+        root = json.loads(args.systems_json.read_text(encoding="utf-8"))
+        apply_ffs_heights(root, records)
+        args.systems_json.write_text(json.dumps(root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated FFS heights: {args.systems_json}")
+        return
+
+    if args.radar_heights_only:
+        root = json.loads(args.systems_json.read_text(encoding="utf-8"))
+        apply_radar_heights(root, records)
+        args.systems_json.write_text(json.dumps(root, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated radar heights: {args.systems_json}")
+        return
+
     if args.los_only:
         root = json.loads(args.systems_json.read_text(encoding="utf-8"))
         apply_system_los(root, records)
@@ -595,6 +641,8 @@ def main() -> None:
 
     systems_root = build_systems_json(records)
     apply_system_los(systems_root, records)
+    apply_radar_heights(systems_root, records)
+    apply_ffs_heights(systems_root, records)
     deployment_root = build_deployment_json(records)
     munitions_root = build_munitions_json(records)
     apply_munition_costs(munitions_root, args.xlsx)

@@ -63,11 +63,15 @@
           "elevationDeg": {
             "min": 0,
             "max": 80
-          }
+          },
+          "heightAboveGroundM": 4
         },
         "engagement": {
           "effectiveRangeKm": 4,
           "effectiveAltitudeKm": 4
+        },
+        "ffs": {
+          "heightAboveGroundM": 2
         }
       },
       "interceptor": {
@@ -155,11 +159,15 @@
           "elevationDeg": {
             "min": 0,
             "max": 60
-          }
+          },
+          "heightAboveGroundM": 5
         },
         "engagement": {
           "effectiveRangeKm": 15,
           "effectiveAltitudeKm": 8
+        },
+        "ffs": {
+          "heightAboveGroundM": 3
         }
       },
       "interceptor": {
@@ -238,11 +246,15 @@
           "elevationDeg": {
             "min": 0,
             "max": 80
-          }
+          },
+          "heightAboveGroundM": 7
         },
         "engagement": {
           "effectiveRangeKm": 25,
           "effectiveAltitudeKm": 15
+        },
+        "ffs": {
+          "heightAboveGroundM": 3
         }
       },
       "interceptor": {
@@ -324,7 +336,8 @@
           "elevationDeg": {
             "min": 0,
             "max": 80
-          }
+          },
+          "heightAboveGroundM": 8
         },
         "akr": {
           "minTrackRangeM": 1000,
@@ -343,6 +356,9 @@
         "engagement": {
           "effectiveRangeKm": 150,
           "effectiveAltitudeKm": 30
+        },
+        "ffs": {
+          "heightAboveGroundM": 4
         }
       },
       "interceptor": {
@@ -437,7 +453,8 @@
           "elevationDeg": {
             "min": 0,
             "max": 80
-          }
+          },
+          "heightAboveGroundM": 8
         },
         "akr": {
           "minTrackRangeM": 1000,
@@ -456,6 +473,9 @@
         "engagement": {
           "effectiveRangeKm": 50,
           "effectiveAltitudeKm": 30
+        },
+        "ffs": {
+          "heightAboveGroundM": 4
         }
       },
       "interceptor": {

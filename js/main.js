@@ -5216,6 +5216,7 @@ function buildSystemCatalogExport(code) {
     },
     technical: {
       radar: {
+        heightAboveGroundM: item?.technical?.radar?.heightAboveGroundM,
         minTrackRangeM: Math.round(numberOrZero(item?.technical?.radar?.trackRange?.minTrackRangeM)),
         illumCapacity: Math.max(0, Math.round(numberOrZero(item?.technical?.radar?.illumCapacity))),
         setupTimeIllTrackSec: Math.max(0, Math.round(numberOrZero(item?.technical?.radar?.setupTimeIllTrackSec))),
@@ -5247,6 +5248,9 @@ function buildSystemCatalogExport(code) {
             }
           }
         : {}),
+      ffs: {
+        heightAboveGroundM: item?.technical?.ffs?.heightAboveGroundM
+      },
       engagement: {
         effectiveRangeKm: numberOrZero(item?.technical?.engagement?.effectiveRangeKm),
         effectiveAltitudeKm: numberOrZero(item?.technical?.engagement?.effectiveAltitudeKm)
