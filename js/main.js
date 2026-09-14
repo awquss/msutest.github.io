@@ -279,8 +279,8 @@ const refs = {
   componentZoomOutBtn: document.getElementById("componentZoomOutBtn"),
   componentZoomInBtn: document.getElementById("componentZoomInBtn"),
   componentZoomResetBtn: document.getElementById("componentZoomResetBtn"),
-  componentRadarX: document.getElementById("componentRadarX"),
-  componentRadarY: document.getElementById("componentRadarY"),
+  componentRadarLat: document.getElementById("componentRadarLat"),
+  componentRadarLon: document.getElementById("componentRadarLon"),
   blindSectorTargetSelect: document.getElementById("blindSectorTargetSelect"),
   blindSectorAddBtn: document.getElementById("blindSectorAddBtn"),
   blindSectorList: document.getElementById("blindSectorList")
@@ -412,8 +412,8 @@ function bindEvents() {
   refs.componentEditorCanvas.addEventListener("mousedown", onComponentEditorMouseDown);
   refs.componentEditorCanvas.addEventListener("mousemove", onComponentEditorMouseMove);
   refs.componentEditorCanvas.addEventListener("wheel", onComponentEditorWheel, { passive: false });
-  refs.componentRadarX.addEventListener("change", onRadarCoordinateInputChange);
-  refs.componentRadarY.addEventListener("change", onRadarCoordinateInputChange);
+  refs.componentRadarLat.addEventListener("change", onRadarGeoCoordinateInputChange);
+  refs.componentRadarLon.addEventListener("change", onRadarGeoCoordinateInputChange);
   refs.blindSectorTargetSelect.addEventListener("change", onBlindSectorTargetChange);
   refs.blindSectorAddBtn.addEventListener("click", addBlindSectorRow);
   refs.blindSectorList.addEventListener("change", onBlindSectorListChange);
@@ -1228,6 +1228,8 @@ function hydrateStoredTerrainPoints() {
   }
 }
 
+window.getThreatCoordinateOrigin = () => localPointToGeo(0, 0);
+
 function localPointToGeo(x, y) {
   const center = state.terrain?.geo?.center;
   const lat = Number(center?.lat);
@@ -1245,8 +1247,23 @@ function localPointToGeo(x, y) {
   };
 }
 
+function geoToLocalPoint(lat, lon) {
+  const origin = localPointToGeo(0, 0);
+  if (!origin || !Number.isFinite(lat) || !Number.isFinite(lon) ||
+      Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return null;
+  }
+  return {
+    x: Math.round((lon - origin.lon) * 111320 * Math.cos(origin.lat * Math.PI / 180)),
+    y: Math.round((lat - origin.lat) * 111320)
+  };
+}
+
 function formatPoint3(point) {
-  return `${Math.round(numberOrZero(point?.x))}, ${Math.round(numberOrZero(point?.y))}, ${Math.round(numberOrZero(point?.z))} m`;
+  const geo = localPointToGeo(point?.x, point?.y);
+  return geo
+    ? `LAT ${geo.lat.toFixed(6)}, LON ${geo.lon.toFixed(6)} | Kot ${Math.round(numberOrZero(point?.z))} m`
+    : "Coğrafi referans yok";
 }
 
 function lerpNumber(a, b, t) {
@@ -2670,32 +2687,29 @@ function renderEirsDraftTable() {
   indexCell.textContent = "1";
 
   const xCell = document.createElement("td");
-  const xInput = document.createElement("input");
-  xInput.type = "text";
-  xInput.inputMode = "numeric";
-  xInput.value = String(Math.round(numberOrZero(point.x)));
-  xInput.addEventListener("change", () => {
-    updateEirsDraftPoint("x", xInput.value);
-  });
-  xInput.addEventListener("blur", () => {
-    updateEirsDraftPoint("x", xInput.value);
-  });
-  xCell.append(xInput);
-
   const yCell = document.createElement("td");
-  const yInput = document.createElement("input");
-  yInput.type = "text";
-  yInput.inputMode = "numeric";
-  yInput.value = String(Math.round(numberOrZero(point.y)));
-  yInput.addEventListener("change", () => {
-    updateEirsDraftPoint("y", yInput.value);
-  });
-  yInput.addEventListener("blur", () => {
-    updateEirsDraftPoint("y", yInput.value);
-  });
-  yCell.append(yInput);
+
+  const geo = localPointToGeo(point.x, point.y);
+  for (const [axis, cell, limit] of [["lat", xCell, 90], ["lon", yCell, 180]]) {
+    const label = document.createElement("label");
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = String(-limit);
+    input.max = String(limit);
+    input.dataset.axis = axis;
+    input.setAttribute("aria-label", axis.toUpperCase());
+    input.value = geo ? geo[axis].toFixed(6) : "";
+    input.disabled = !geo;
+    input.placeholder = geo ? "" : "Coğrafi referans yok";
+    input.addEventListener("change", () => updateEirsDraftPoint(axis, input.value));
+    label.append(input);
+    cell.append(label);
+  }
 
   const zCell = document.createElement("td");
+  zCell.dataset.elevation = "true";
   zCell.textContent = `${Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y)))} m`;
 
   const actionCell = document.createElement("td");
@@ -2719,12 +2733,34 @@ function updateEirsDraftPoint(axis, rawValue) {
 
   const normalized = String(rawValue ?? "").trim().replace(",", ".");
   const num = Number(normalized);
-  if (!Number.isFinite(num)) {
+  if (!normalized || !Number.isFinite(num)) {
     return;
   }
 
-  state.eirsDraft.points[0][axis] = Math.round(num);
-  state.eirsDraft.points[0] = enrichPointWithTerrain(state.eirsDraft.points[0]);
+  const current = state.eirsDraft.points[0];
+  let point;
+  if (axis === "lat" || axis === "lon") {
+    const geo = localPointToGeo(current.x, current.y);
+    if (!geo) return;
+    point = geoToLocalPoint(axis === "lat" ? num : geo.lat, axis === "lon" ? num : geo.lon);
+    if (!point) return;
+  } else {
+    point = {
+      x: axis === "x" ? Math.round(num) : current.x,
+      y: axis === "y" ? Math.round(num) : current.y
+    };
+  }
+  state.eirsDraft.points[0] = enrichPointWithTerrain(point);
+  const updated = state.eirsDraft.points[0];
+  const geo = localPointToGeo(updated.x, updated.y);
+  refs.eirsCoordTableBody.querySelectorAll("input[data-axis]").forEach((input) => {
+    const field = input.dataset.axis;
+    input.value = field === "lat" || field === "lon"
+      ? (geo ? geo[field].toFixed(6) : "")
+      : String(updated[field]);
+  });
+  const elevationCell = refs.eirsCoordTableBody.querySelector("[data-elevation]");
+  if (elevationCell) elevationCell.textContent = `${updated.z} m`;
   syncEirsActionButtons();
   setEirsStatus(
     `EİRS koordinatı güncellendi: (${formatPoint3(state.eirsDraft.points[0])})`,
@@ -3434,32 +3470,38 @@ function renderDraftTable() {
 
   state.draft.points.forEach((point, index) => {
     const tr = document.createElement("tr");
+    tr.dataset.pointIndex = String(index);
 
     const indexCell = document.createElement("td");
     indexCell.textContent = String(index + 1);
 
     const xCell = document.createElement("td");
-    const xInput = document.createElement("input");
-    xInput.type = "number";
-    xInput.step = "1";
-    xInput.value = String(point.x);
-    xInput.addEventListener("input", () => {
-      updateDraftPoint(index, "x", xInput.value);
-    });
-    xCell.append(xInput);
-
     const yCell = document.createElement("td");
-    const yInput = document.createElement("input");
-    yInput.type = "number";
-    yInput.step = "1";
-    yInput.value = String(point.y);
-  yInput.addEventListener("input", () => {
-    updateDraftPoint(index, "y", yInput.value);
-  });
-  yCell.append(yInput);
 
-  const zCell = document.createElement("td");
-  zCell.textContent = `${Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y)))} m`;
+    const geo = localPointToGeo(point.x, point.y);
+    for (const [axis, cell, limit] of [["lat", xCell, 90], ["lon", yCell, 180]]) {
+      const label = document.createElement("label");
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.min = String(-limit);
+      input.max = String(limit);
+      input.dataset.axis = axis;
+      input.setAttribute("aria-label", axis.toUpperCase());
+      input.value = geo ? geo[axis].toFixed(6) : "";
+      input.disabled = !geo;
+      input.placeholder = geo ? "" : "Coğrafi referans yok";
+      input.addEventListener("input", () => {
+        updateDraftGeoPoint(index, axis, input.value);
+      });
+      label.append(input);
+      cell.append(label);
+    }
+
+    const zCell = document.createElement("td");
+    zCell.dataset.elevation = "true";
+    zCell.textContent = `${Math.round(numberOrZero(point.z ?? sampleTerrainElevation(point.x, point.y)))} m`;
 
   const actionCell = document.createElement("td");
     const removeBtn = document.createElement("button");
@@ -3477,21 +3519,34 @@ function renderDraftTable() {
   });
 }
 
-function updateDraftPoint(index, axis, rawValue) {
-  if (!state.draft) {
-    return;
-  }
-
-  const num = Number(rawValue);
-  if (!Number.isFinite(num)) {
-    return;
-  }
-
-  state.draft.points[index][axis] = Math.round(num);
-  state.draft.points[index] = enrichPointWithTerrain(state.draft.points[index]);
+function updateDraftGeoPoint(index, axis, rawValue) {
+  if (!state.draft || !String(rawValue).trim()) return;
+  const value = Number(rawValue);
+  const current = state.draft.points[index];
+  const geo = localPointToGeo(current.x, current.y);
+  if (!geo) return;
+  const point = geoToLocalPoint(axis === "lat" ? value : geo.lat, axis === "lon" ? value : geo.lon);
+  if (!point) return;
+  state.draft.points[index] = enrichPointWithTerrain(point);
+  syncDraftPointInputs(index, axis);
   syncAreaActionButtons();
   renderAreaGuide();
   renderCanvas();
+}
+
+function syncDraftPointInputs(index, editedAxis) {
+  const point = state.draft.points[index];
+  const geo = localPointToGeo(point.x, point.y);
+  const row = refs.coordTableBody.querySelector(`[data-point-index="${index}"]`);
+  if (!row) return;
+  row.querySelectorAll("input[data-axis]").forEach((input) => {
+    const axis = input.dataset.axis;
+    if (axis === editedAxis) return;
+    input.value = axis === "lat" || axis === "lon"
+      ? (geo ? geo[axis].toFixed(6) : "")
+      : String(point[axis]);
+  });
+  row.querySelector("[data-elevation]").textContent = `${point.z} m`;
 }
 
 function removeDraftPoint(index) {
@@ -6322,19 +6377,20 @@ function applyEditorDrag(layout, dragTarget, point) {
   }
 }
 
-function onRadarCoordinateInputChange() {
-  if (!state.componentEditor.open || !state.componentEditor.layout) {
-    return;
-  }
-
-  const nextX = Number(refs.componentRadarX.value);
-  const nextY = Number(refs.componentRadarY.value);
-  if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) {
-    refs.componentEditorInfo.textContent = "Radar koordinatı sayısal olmalıdır.";
+function onRadarGeoCoordinateInputChange() {
+  if (!state.componentEditor.open || !state.componentEditor.layout) return;
+  const lat = refs.componentRadarLat.value.trim();
+  const lon = refs.componentRadarLon.value.trim();
+  const point = lat && lon ? geoToLocalPoint(Number(lat), Number(lon)) : null;
+  if (!point) {
+    refs.componentEditorInfo.textContent = "Geçerli bir LAT (-90–90) ve LON (-180–180) değeri girin; haritanın coğrafi referansı bulunmalıdır.";
     refs.componentEditorInfo.className = "status warn";
     return;
   }
+  updateRadarPosition(point.x, point.y);
+}
 
+function updateRadarPosition(nextX, nextY) {
   const deltaX = Math.round(nextX) - numberOrZero(state.componentEditor.layout.radar.x);
   const deltaY = Math.round(nextY) - numberOrZero(state.componentEditor.layout.radar.y);
   const shifted = shiftComponentLayout(state.componentEditor.layout, deltaX, deltaY);
@@ -6352,7 +6408,7 @@ function applyComponentEditorCandidateIfValid(candidate) {
   const normalized = normalizeComponentLayout(candidate, state.componentEditor.componentSpec || null);
   const check = validateComponentLayout(normalized, state.componentEditor.constraints);
   if (!check.valid) {
-    state.componentEditor.hoverError = "";
+    state.componentEditor.hoverError = check.errors[0];
     return false;
   }
   state.componentEditor.layout = normalized;
@@ -6362,12 +6418,19 @@ function applyComponentEditorCandidateIfValid(candidate) {
 
 function syncRadarCoordinateInputs() {
   if (!state.componentEditor.layout) {
-    refs.componentRadarX.value = "";
-    refs.componentRadarY.value = "";
+    refs.componentRadarLat.value = "";
+    refs.componentRadarLon.value = "";
+    refs.componentRadarLat.disabled = true;
+    refs.componentRadarLon.disabled = true;
     return;
   }
-  refs.componentRadarX.value = String(Math.round(numberOrZero(state.componentEditor.layout.radar.x)));
-  refs.componentRadarY.value = String(Math.round(numberOrZero(state.componentEditor.layout.radar.y)));
+  const radar = state.componentEditor.layout.radar;
+  const geo = localPointToGeo(radar.x, radar.y);
+  for (const [axis, input] of [["lat", refs.componentRadarLat], ["lon", refs.componentRadarLon]]) {
+    input.value = geo ? geo[axis].toFixed(6) : "";
+    input.disabled = !geo;
+    input.placeholder = geo ? "" : "Coğrafi referans yok";
+  }
 }
 
 function onBlindSectorTargetChange() {
@@ -6766,6 +6829,9 @@ function renderComponentEditor() {
   if (state.componentEditor.blindError) {
     refs.componentEditorInfo.textContent = `Kör sektör hatası: ${state.componentEditor.blindError}`;
     refs.componentEditorInfo.className = "status warn";
+  } else if (state.componentEditor.hoverError) {
+    refs.componentEditorInfo.textContent = `Konum güncellenemedi: ${state.componentEditor.hoverError}`;
+    refs.componentEditorInfo.className = "status warn";
   } else if (check.valid) {
     refs.componentEditorInfo.textContent = "Kısıtlar uygun. Kaydedebilirsiniz.";
     refs.componentEditorInfo.className = "status";
@@ -6906,12 +6972,12 @@ function renderDeploymentMap() {
   } else if (selectedAlternative) {
     refs.deploymentMapInfo.textContent =
       `${coverageLabel} | ${selectedAlternative.assignment.code} ${selectedAlternative.alternativeId} alternatif konuş yeri ` +
-      `Koord: (${Math.round(selectedAlternative.position.x)}, ${Math.round(selectedAlternative.position.y)})`;
+      `Koord: (${formatPoint3(selectedAlternative.position)})`;
   } else if (selected) {
     const planText = selected.unit.planId ? `Plan ${selected.unit.planId}` : "Plan";
     refs.deploymentMapInfo.textContent =
       `${coverageLabel} | ${systemSummary} | ${planText} ${getDeploymentUnitLabel(selected.unit)} ` +
-      `Koord: (${Math.round(selected.unit.x)}, ${Math.round(selected.unit.y)})`;
+      `Koord: (${formatPoint3(selected.unit)})`;
   } else if (!previews.length) {
     refs.deploymentMapInfo.textContent = "Korunacak varlıklar gösteriliyor. Konuşlandırma kaydedildiğinde HSS yerleşimleri burada görünecek.";
   } else {
@@ -8110,8 +8176,8 @@ function shiftComponentLayout(layout, dx, dy) {
   const shifted = normalizeComponentLayout(layout);
   const movePoint = (point) => ({
     ...point,
-    x: Math.round(numberOrZero(point.x) + dx),
-    y: Math.round(numberOrZero(point.y) + dy)
+    x: numberOrZero(point.x) + dx,
+    y: numberOrZero(point.y) + dy
   });
 
   return {
@@ -8602,9 +8668,7 @@ function buildScenarioReportFlowLines(report) {
     lines.push({ text, fontSize: 9, indent: 2, gapAfter: 2 });
     for (const [payloadIndex, payload] of platform.payloads.entries()) {
       let payloadText = `${String.fromCharCode(97 + payloadIndex)}. [ID: ${payload.payloadId}, ${payload.targetId}], [Release Time: ${payload.releaseTime}], [Tot: ${payload.tot}]`;
-      if (payload.manualPoint) {
-        payloadText += ` ${payload.manualPoint}`;
-      }
+      payloadText += ` [Release: ${formatReportPosition(payload.releasePoint)}] [Hedef: ${formatReportPosition(payload.targetPoint)}]`;
       lines.push({ text: payloadText, fontSize: 9, indent: 18, gapAfter: 2 });
     }
   }
@@ -8615,9 +8679,7 @@ function buildScenarioReportFlowLines(report) {
   }
   for (const [index, ballistic] of report.ballistics.entries()) {
     let text = `${index + 1}. [ID: ${ballistic.ballisticId}], [Hedef: ${ballistic.targetId}], [Launch T: ${ballistic.launchTime}], [Impact T: ${ballistic.impactTime}]`;
-    if (ballistic.manualPoint) {
-      text += ` ${ballistic.manualPoint}`;
-    }
+    text += ` [Launch: ${formatReportPosition(ballistic.route[0])}] [Impact: ${formatReportPosition(ballistic.route[1])}]`;
     lines.push({ text, fontSize: 9, indent: 2, gapAfter: 2 });
   }
 
@@ -8728,7 +8790,9 @@ function toReportPosition(value) {
   return {
     x: Number(value.x) || 0,
     y: Number(value.y) || 0,
-    z: Number(value.z ?? value.elevationM) || 0
+    z: Number(value.z ?? value.elevationM) || 0,
+    lat: numberOrNull(value.lat),
+    lon: numberOrNull(value.lon)
   };
 }
 
@@ -8736,7 +8800,13 @@ function formatReportPosition(point) {
   if (!point) {
     return "-";
   }
-  return `${formatReportNumber(point.x)}, ${formatReportNumber(point.y)}, ${formatReportNumber(point.z)} m`;
+  const lat = numberOrNull(point.lat);
+  const lon = numberOrNull(point.lon);
+  const geo = lat !== null && lon !== null ? { lat, lon } : localPointToGeo(point.x, point.y);
+  const altitude = `Kot: ${formatReportNumber(point.z ?? 0)} m`;
+  return geo
+    ? `LAT: ${geo.lat.toFixed(6)}°, LON: ${geo.lon.toFixed(6)}°, ${altitude}`
+    : `Coğrafi referans yok, ${altitude}`;
 }
 
 function buildReportAlternativeHssLayout(layout, index) {
@@ -8769,13 +8839,8 @@ function toReportPoint(value) {
 }
 
 function formatReportPoint3(values) {
-  if (!Array.isArray(values)) {
-    return "(-, -, -)";
-  }
-  const x = formatReportNumber(values[0]);
-  const y = formatReportNumber(values[1]);
-  const z = formatReportNumber(values[2] ?? 0);
-  return `(${x}, ${y}, ${z})`;
+  const point = toReportPoint(values);
+  return point ? `(${formatReportPosition(point)})` : "-";
 }
 
 function pointInReportPolygon(point, polygon) {

@@ -897,7 +897,7 @@
               <button id="cancelDraftBtn" class="warn" type="button" disabled>Taslağı İptal Et</button>
             </div>
 
-            <p class="hint">Nokta savunmasında haritadan 1 nokta, bölge savunmasında en az 3 nokta seçin. Koordinatları alttaki tablodan manuel düzeltebilirsiniz.</p>
+            <p class="hint">Nokta savunmasında haritadan 1 nokta, bölge savunmasında en az 3 nokta seçin. Koordinatları alttaki LAT/LON kutularından güncelleyebilirsiniz. LAT/LON değerleri ondalık derece cinsindedir.</p>
           </div>
 
           <div class="card">
@@ -916,8 +916,8 @@
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>X</th>
-                  <th>Y</th>
+                  <th>LAT (°)</th>
+                  <th>LON (°)</th>
                   <th>Z</th>
                   <th>İşlem</th>
                 </tr>
@@ -967,7 +967,7 @@
               <button id="cancelEirsDraftBtn" class="warn" type="button" disabled>Taslağı İptal Et</button>
             </div>
 
-            <p class="hint">Yeni EİRS ekledikten sonra haritada 1 nokta seçin. Bu radar HSS-U/HSS-F radar kapsaması ile aynı hava resmi katkısını sağlar.</p>
+            <p class="hint">Yeni EİRS ekledikten sonra haritada 1 nokta seçin. Koordinatları ondalık derece cinsinden LAT/LON kutularından güncelleyebilirsiniz. Bu radar HSS-U/HSS-F radar kapsaması ile aynı hava resmi katkısını sağlar.</p>
           </div>
 
           <div class="card">
@@ -986,8 +986,8 @@
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>X</th>
-                  <th>Y</th>
+                  <th>LAT (°)</th>
+                  <th>LON (°)</th>
                   <th>Z</th>
                   <th>İşlem</th>
                 </tr>
@@ -1072,8 +1072,8 @@
                 <tr>
                   <th>#</th>
                   <th>Tür</th>
-                  <th>X (m)</th>
-                  <th>Y (m)</th>
+                  <th>LAT (°)</th>
+                  <th>LON (°)</th>
                   <th>İrtifa (m)</th>
                   <th>Sürat (m/s)</th>
                 </tr>
@@ -1089,8 +1089,8 @@
                 <tr>
                   <th>#</th>
                   <th>Silah</th>
-                  <th>Release</th>
-                  <th>Hedef</th>
+                  <th>Release (LAT, LON)</th>
+                  <th>Hedef (LAT, LON)</th>
                   <th>Release Time (s)</th>
                   <th>Payload ToT (s)</th>
                   <th>Release Offset (s)</th>
@@ -1108,8 +1108,8 @@
                 <tr>
                   <th>#</th>
                   <th>Model</th>
-                  <th>Launch</th>
-                  <th>Impact</th>
+                  <th>Launch (LAT, LON)</th>
+                  <th>Impact (LAT, LON)</th>
                   <th>Launch Time (s)</th>
                   <th>Impact Time (s)</th>
                   <th>İşlem</th>
@@ -1258,14 +1258,14 @@
         <aside class="blind-editor">
           <h4>Radar Koordinatı</h4>
           <div class="controls">
-            <div class="row" style="margin-top: 0;">
+            <div class="row">
               <div>
-                <label for="componentRadarX">Radar X</label>
-                <input id="componentRadarX" type="number" step="1">
+                <label for="componentRadarLat">LAT</label>
+                <input id="componentRadarLat" type="number" step="any" min="-90" max="90">
               </div>
               <div>
-                <label for="componentRadarY">Radar Y</label>
-                <input id="componentRadarY" type="number" step="1">
+                <label for="componentRadarLon">LON</label>
+                <input id="componentRadarLon" type="number" step="any" min="-180" max="180">
               </div>
             </div>
           </div>

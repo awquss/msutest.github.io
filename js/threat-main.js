@@ -141,7 +141,24 @@ window.requestSharedThreatMapRender = () => {
       }
     };
 
+window.handleSharedTerrainPoint = (point) => {
+      if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
+        return false;
+      }
+      handleWorldMapPoint(
+        round(Number(point.x), 2),
+        round(Number(point.y), 2),
+        Number.isFinite(Number(point.z ?? point.elevationM)) ? round(Number(point.z ?? point.elevationM), 2) : null
+      );
+      return true;
+    };
+
 window.requestThreatSharedLayoutSync = () => {
+      syncTargetInputs();
+      syncPayloadPointInputs();
+      syncBallisticPointInputs();
+      renderPointTable();
+      renderSavedBallisticTable();
       syncParentThreatSharedCards();
     };
 
@@ -495,8 +512,8 @@ async function init() {
       refs.zoomResetBtn.addEventListener("click", () => setZoom(DEFAULTS.zoom));
       refs.setTargetBtn.addEventListener("click", () => setCanvasMode("attackTarget"));
       refs.attackTargetSelect.addEventListener("change", onAttackTargetSourceChange);
-      refs.targetX.addEventListener("input", onAttackTargetInput);
-      refs.targetY.addEventListener("input", onAttackTargetInput);
+      refs.targetX.addEventListener("change", onAttackTargetInput);
+      refs.targetY.addEventListener("change", onAttackTargetInput);
       refs.totTime.addEventListener("change", onTotTimeChange);
       refs.totTime.addEventListener("blur", onTotTimeChange);
 
@@ -512,7 +529,7 @@ async function init() {
         refs.payloadTargetY
       ];
       for (const input of payloadPointInputs) {
-        input.addEventListener("input", onPayloadPointInput);
+        input.addEventListener("change", onPayloadPointInput);
       }
       refs.addKinematicEntityBtn.addEventListener("click", addCurrentKinematicToScenario);
       refs.clearKinematicDraftBtn.addEventListener("click", clearKinematicDraft);
@@ -529,7 +546,7 @@ async function init() {
         refs.ballisticImpactY
       ];
       for (const input of ballisticPointInputs) {
-        input.addEventListener("input", onBallisticPointInput);
+        input.addEventListener("change", onBallisticPointInput);
       }
       const ballisticTimeInputs = [refs.launchTime, refs.impactTot];
       for (const input of ballisticTimeInputs) {
@@ -1411,17 +1428,63 @@ async function init() {
       updateBallisticInfo();
     }
 
+    function getCoordinateOrigin() {
+      try {
+        if (IS_EMBEDDED && window.parent?.getThreatCoordinateOrigin) {
+          return window.parent.getThreatCoordinateOrigin();
+        }
+        const payload = JSON.parse(window.sessionStorage.getItem(SHARED_DEFENDED_ASSETS_KEY) || "null");
+        for (const asset of payload?.assets || []) {
+          for (const point of asset.points || []) {
+            if (point.lat == null || point.lon == null) continue;
+            const lat = Number(point.lat) - Number(point.y) / 111320;
+            const scale = 111320 * Math.cos(lat * Math.PI / 180);
+            const lon = Number(point.lon) - Number(point.x) / scale;
+            if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(scale) > 1e-6) return { lat, lon };
+          }
+        }
+      } catch (_err) {
+        return null;
+      }
+      return null;
+    }
+
+    function pointToGeo(point) {
+      const origin = getCoordinateOrigin();
+      if (!point || !origin) return null;
+      const scale = 111320 * Math.cos(origin.lat * Math.PI / 180);
+      if (Math.abs(scale) < 1e-6) return null;
+      return { lat: origin.lat + point.y / 111320, lon: origin.lon + point.x / scale };
+    }
+
+    function geoInputsToPoint(latValue, lonValue) {
+      const origin = getCoordinateOrigin();
+      const lat = parseOptionalNumberInput(latValue);
+      const lon = parseOptionalNumberInput(lonValue);
+      if (!origin || lat === null || lon === null || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+      const scale = 111320 * Math.cos(origin.lat * Math.PI / 180);
+      if (Math.abs(scale) < 1e-6) return null;
+      return { x: round((lon - origin.lon) * scale, 2), y: round((lat - origin.lat) * 111320, 2) };
+    }
+
+    function syncGeoInputs(latInput, lonInput, point) {
+      const geo = pointToGeo(point);
+      latInput.value = geo ? geo.lat.toFixed(6) : "";
+      lonInput.value = geo ? geo.lon.toFixed(6) : "";
+      for (const input of [latInput, lonInput]) {
+        input.disabled = !getCoordinateOrigin();
+        input.placeholder = input.disabled ? "Coğrafi referans yok" : "-";
+      }
+    }
+
     function onAttackTargetInput() {
       state.attackTargetSource.mode = "manual";
       state.attackTargetSource.defendedAssetId = "";
       refs.attackTargetSelect.value = "manual";
       state.lockRouteTargetWaypoint = Boolean(state.selectedPlatform);
-      const x = Number(refs.targetX.value);
-      const y = Number(refs.targetY.value);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        return;
-      }
-      state.attackTarget = { x, y };
+      const point = geoInputsToPoint(refs.targetX.value, refs.targetY.value);
+      if (!point) return;
+      state.attackTarget = point;
       syncAttackTargetWithSource();
       syncPayloadTargetWithAttackIfNeeded();
       syncPayloadPointInputs();
@@ -1436,8 +1499,7 @@ async function init() {
     }
 
     function syncTargetInputs() {
-      refs.targetX.value = round(state.attackTarget.x, 1);
-      refs.targetY.value = round(state.attackTarget.y, 1);
+      syncGeoInputs(refs.targetX, refs.targetY, state.attackTarget);
       refs.attackTargetSelect.value =
         state.attackTargetSource.mode === "defendedAsset" && state.attackTargetSource.defendedAssetId
           ? `asset:${state.attackTargetSource.defendedAssetId}`
@@ -1503,11 +1565,9 @@ async function init() {
           : row?.targetSource?.mode === "manual"
             ? "manual"
             : "attackTarget";
-      refs.payloadReleaseX.value = row?.releasePoint ? round(row.releasePoint.x, 2) : "";
-      refs.payloadReleaseY.value = row?.releasePoint ? round(row.releasePoint.y, 2) : "";
+      syncGeoInputs(refs.payloadReleaseX, refs.payloadReleaseY, row?.releasePoint);
       const targetPoint = row?.targetPoint || state.attackTarget;
-      refs.payloadTargetX.value = targetPoint ? round(targetPoint.x, 2) : "";
-      refs.payloadTargetY.value = targetPoint ? round(targetPoint.y, 2) : "";
+      syncGeoInputs(refs.payloadTargetX, refs.payloadTargetY, targetPoint);
       refs.setReleasePointBtn.disabled = !row;
       updatePayloadFormVisibility();
     }
@@ -1660,10 +1720,8 @@ async function init() {
     }
 
     function syncBallisticPointInputs() {
-      refs.ballisticLaunchX.value = state.ballisticLaunch ? round(state.ballisticLaunch.x, 2) : "";
-      refs.ballisticLaunchY.value = state.ballisticLaunch ? round(state.ballisticLaunch.y, 2) : "";
-      refs.ballisticImpactX.value = state.ballisticImpact ? round(state.ballisticImpact.x, 2) : "";
-      refs.ballisticImpactY.value = state.ballisticImpact ? round(state.ballisticImpact.y, 2) : "";
+      syncGeoInputs(refs.ballisticLaunchX, refs.ballisticLaunchY, state.ballisticLaunch);
+      syncGeoInputs(refs.ballisticImpactX, refs.ballisticImpactY, state.ballisticImpact);
       refs.ballisticImpactSelect.value =
         state.ballisticImpactSource.mode === "defendedAsset" && state.ballisticImpactSource.defendedAssetId
           ? `asset:${state.ballisticImpactSource.defendedAssetId}`
@@ -1740,24 +1798,8 @@ async function init() {
 
       const xInput = pointKey === "release" ? refs.payloadReleaseX : refs.payloadTargetX;
       const yInput = pointKey === "release" ? refs.payloadReleaseY : refs.payloadTargetY;
-      const nextX = parseOptionalNumberInput(xInput.value);
-      const nextY = parseOptionalNumberInput(yInput.value);
-      const fallbackPoint = pointKey === "release"
-        ? row.releasePoint
-        : row.targetPoint;
-      const changedValue = parseOptionalNumberInput(event.target.value);
-
-      let updated = null;
-      if (Number.isFinite(nextX) && Number.isFinite(nextY)) {
-        updated = { x: round(nextX, 2), y: round(nextY, 2) };
-      } else if (fallbackPoint && Number.isFinite(changedValue)) {
-        updated = {
-          x: axis === "x" ? round(changedValue, 2) : fallbackPoint.x,
-          y: axis === "y" ? round(changedValue, 2) : fallbackPoint.y
-        };
-      } else {
-        return;
-      }
+      const updated = geoInputsToPoint(xInput.value, yInput.value);
+      if (!updated) return;
 
       if (pointKey === "release") {
         row.releasePoint = updated;
@@ -1788,22 +1830,8 @@ async function init() {
 
       const xInput = pointKey === "launch" ? refs.ballisticLaunchX : refs.ballisticImpactX;
       const yInput = pointKey === "launch" ? refs.ballisticLaunchY : refs.ballisticImpactY;
-      const nextX = parseOptionalNumberInput(xInput.value);
-      const nextY = parseOptionalNumberInput(yInput.value);
-      const currentPoint = pointKey === "launch" ? state.ballisticLaunch : state.ballisticImpact;
-      const changedValue = parseOptionalNumberInput(event.target.value);
-
-      let updated = null;
-      if (Number.isFinite(nextX) && Number.isFinite(nextY)) {
-        updated = { x: round(nextX, 2), y: round(nextY, 2) };
-      } else if (currentPoint && Number.isFinite(changedValue)) {
-        updated = {
-          x: axis === "x" ? round(changedValue, 2) : currentPoint.x,
-          y: axis === "y" ? round(changedValue, 2) : currentPoint.y
-        };
-      } else {
-        return;
-      }
+      const updated = geoInputsToPoint(xInput.value, yInput.value);
+      if (!updated) return;
 
       if (pointKey === "launch") {
         state.ballisticLaunch = updated;
@@ -1895,12 +1923,15 @@ async function init() {
       const world = screenToWorld(sx, sy);
       const x = round(world.x, 2);
       const y = round(world.y, 2);
+      handleWorldMapPoint(x, y, null);
+    }
 
+    function handleWorldMapPoint(x, y, terrainZ = null) {
       if (state.canvasMode === "attackTarget") {
         state.attackTargetSource.mode = "manual";
         state.attackTargetSource.defendedAssetId = "";
         refs.attackTargetSelect.value = "manual";
-        state.attackTarget = { x, y };
+        state.attackTarget = buildTerrainAwareThreatPoint(x, y, terrainZ);
         syncTargetInputs();
         syncAttackTargetWithSource();
         syncPayloadTargetWithAttackIfNeeded();
@@ -1957,7 +1988,7 @@ async function init() {
         row.targetSource.mode = "manual";
         row.targetSource.defendedAssetId = "";
         refs.payloadTargetSelect.value = "manual";
-        row.targetPoint = { x, y };
+        row.targetPoint = buildTerrainAwareThreatPoint(x, y, terrainZ);
         row.targetManual = true;
         syncPayloadTargetWithSource();
         syncPayloadPointInputs();
@@ -1975,12 +2006,12 @@ async function init() {
 
       if (state.activeTab === "ballistic" && state.ballisticEnabled && state.ballisticMode) {
         if (state.ballisticMode === "launch") {
-          state.ballisticLaunch = { x, y };
+          state.ballisticLaunch = buildTerrainAwareThreatPoint(x, y, terrainZ);
         } else {
           state.ballisticImpactSource.mode = "manual";
           state.ballisticImpactSource.defendedAssetId = "";
           refs.ballisticImpactSelect.value = "manual";
-          state.ballisticImpact = { x, y };
+          state.ballisticImpact = buildTerrainAwareThreatPoint(x, y, terrainZ);
           syncBallisticImpactWithSource();
         }
 
@@ -2009,9 +2040,11 @@ async function init() {
 
       const lastPoint = state.points[state.points.length - 1] || null;
       const defaultSpeed = lastPoint ? lastPoint.speed : state.selectedPlatform.kinematics.speed.min;
-      const defaultAltitude = lastPoint ? lastPoint.altitude : 1000;
+      const defaultAltitude = Number.isFinite(Number(terrainZ))
+        ? Number(terrainZ)
+        : (lastPoint ? lastPoint.altitude : 1000);
 
-      const candidatePoint = { x, y, altitude: defaultAltitude, speed: defaultSpeed };
+      const candidatePoint = { x, y, altitude: defaultAltitude, terrainElevationM: Number.isFinite(Number(terrainZ)) ? Number(terrainZ) : null, speed: defaultSpeed };
       const nextPoints = buildNextRoutePoints(candidatePoint);
       const errors = validateAllPoints(nextPoints, state.selectedPlatform);
       if (errors.length > 0) {
@@ -2028,6 +2061,15 @@ async function init() {
       renderConstraintSummary();
       drawCanvas();
       buildScenario(false);
+    }
+
+    function buildTerrainAwareThreatPoint(x, y, terrainZ = null) {
+      const point = { x, y };
+      if (Number.isFinite(Number(terrainZ))) {
+        point.z = Number(terrainZ);
+        point.terrainElevationM = Number(terrainZ);
+      }
+      return point;
     }
 
     function undoPoint() {
@@ -2115,6 +2157,10 @@ async function init() {
       buildScenario(false);
     }
 
+    function formatPayloadGeoPoint(point) {
+      return point ? formatBallisticGeoPosition([point.x, point.y]) : "-";
+    }
+
     function renderPayloadTable() {
       refs.payloadTableBody.innerHTML = "";
 
@@ -2143,8 +2189,8 @@ async function init() {
         tr.innerHTML = `
           <td>${idx + 1}</td>
           <td><select data-role="payload-weapon" data-index="${idx}">${weaponOptions}</select></td>
-          <td>${row.releasePoint ? `(${round(row.releasePoint.x, 0)}, ${round(row.releasePoint.y, 0)})` : "-"}</td>
-          <td>${row.targetPoint ? `(${round(row.targetPoint.x, 0)}, ${round(row.targetPoint.y, 0)})` : "-"}</td>
+          <td>${formatPayloadGeoPoint(row.releasePoint)}</td>
+          <td>${formatPayloadGeoPoint(row.targetPoint)}</td>
           <td><input type="number" min="0" step="0.1" value="${releaseTimeDisplay}" data-role="payload-release-time" data-index="${idx}" readonly></td>
           <td><input type="number" min="0" step="0.1" value="${targetTotDisplay}" data-role="payload-tot" data-index="${idx}" readonly></td>
           <td><input type="number" step="1" value="${row.releaseOffset}" data-role="payload-release" data-index="${idx}"></td>
@@ -2479,6 +2525,7 @@ async function init() {
         name: state.lockRouteTargetWaypoint && i === state.points.slice(1).length - 1 ? "TARGET" : `WP-${i + 1}`,
         position: [round(p.x, 3), round(p.y, 3)],
         targetAltitude: Number(p.altitude),
+        terrainElevationM: Number.isFinite(Number(p.terrainElevationM)) ? Number(p.terrainElevationM) : Number(p.altitude),
         targetSpeed: Number(p.speed)
       }));
 
@@ -2495,6 +2542,7 @@ async function init() {
           initialState: {
             position: [round(start.x, 3), round(start.y, 3)],
             altitude: Number(start.altitude),
+            terrainElevationM: Number.isFinite(Number(start.terrainElevationM)) ? Number(start.terrainElevationM) : Number(start.altitude),
             speed: Number(start.speed),
             heading: round(heading, 2)
           },
@@ -2508,6 +2556,10 @@ async function init() {
           const weapon = state.weapons.find((w) => w.id === row.weaponId);
           const releaseRow = timeline.info.releaseRows?.[i];
           const releaseAltitude = round(releaseRow?.releaseProjection?.altitude ?? start.altitude ?? 0, 3);
+          const target = releaseRow?.target || row.targetPoint || state.attackTarget;
+          const targetZ = Number.isFinite(Number(target?.z ?? target?.terrainElevationM))
+            ? round(Number(target.z ?? target.terrainElevationM), 3)
+            : 0;
           return {
             id: buildPayloadInstanceId(state.payloadRows, i),
             category: normalizePayloadCategory(weapon.category),
@@ -2530,16 +2582,16 @@ async function init() {
             ],
             releasePointZ: releaseAltitude,
             targetPoint: [
-              round((releaseRow?.target || row.targetPoint || state.attackTarget).x, 3),
-              round((releaseRow?.target || row.targetPoint || state.attackTarget).y, 3)
+              round(target.x, 3),
+              round(target.y, 3)
             ],
             targetDefinition: getPayloadTargetDefinition(row),
             targetPoint3D: [
-              round((releaseRow?.target || row.targetPoint || state.attackTarget).x, 3),
-              round((releaseRow?.target || row.targetPoint || state.attackTarget).y, 3),
-              0
+              round(target.x, 3),
+              round(target.y, 3),
+              targetZ
             ],
-            targetPointZ: 0,
+            targetPointZ: targetZ,
             pathProfile: "StraightLine"
           };
         });
@@ -2555,6 +2607,12 @@ async function init() {
           platformTot: Math.max(0, Number(refs.totTime.value) || 0),
           payloadTots: (timeline.info.releaseRows || []).map((r) => Math.max(0, Number(r.targetTot) || 0)),
           attackTarget: [round(state.attackTarget.x, 3), round(state.attackTarget.y, 3)],
+          attackTarget3D: [
+            round(state.attackTarget.x, 3),
+            round(state.attackTarget.y, 3),
+            round(Number(state.attackTarget.z ?? state.attackTarget.terrainElevationM ?? 0), 3)
+          ],
+          attackTargetZ: round(Number(state.attackTarget.z ?? state.attackTarget.terrainElevationM ?? 0), 3),
           attackTargetDefinition: getCurrentAttackTargetDefinition()
         },
         entity
@@ -2596,6 +2654,11 @@ async function init() {
         impactTime: Math.max(0, impactTot),
         trajectory: {
           launchPoint: [round(state.ballisticLaunch.x, 3), round(state.ballisticLaunch.y, 3)],
+          launchPoint3D: [
+            round(state.ballisticLaunch.x, 3),
+            round(state.ballisticLaunch.y, 3),
+            round(Number(state.ballisticLaunch.z ?? state.ballisticLaunch.terrainElevationM ?? 0), 3)
+          ],
           boost: {
             duration: Number(b.trajectory.boost.duration),
             maxAltitude: Number(b.trajectory.boost.maxAltitude)
@@ -2605,6 +2668,12 @@ async function init() {
           },
           terminal: {
             impactPoint: [round(state.ballisticImpact.x, 3), round(state.ballisticImpact.y, 3)],
+            impactPoint3D: [
+              round(state.ballisticImpact.x, 3),
+              round(state.ballisticImpact.y, 3),
+              round(Number(state.ballisticImpact.z ?? state.ballisticImpact.terrainElevationM ?? 0), 3)
+            ],
+            impactPointZ: round(Number(state.ballisticImpact.z ?? state.ballisticImpact.terrainElevationM ?? 0), 3),
             impactSpeed: Number(b.trajectory.terminal.impactSpeed)
           }
         },
@@ -2882,6 +2951,13 @@ async function init() {
       }
     }
 
+    function formatBallisticGeoPosition(position) {
+      if (!Array.isArray(position) || position.length < 2 ||
+          !Number.isFinite(position[0]) || !Number.isFinite(position[1])) return "-";
+      const geo = pointToGeo({ x: position[0], y: position[1] });
+      return geo ? `${geo.lat.toFixed(6)}°, ${geo.lon.toFixed(6)}°` : "Coğrafi referans yok";
+    }
+
     function renderSavedBallisticTable() {
       refs.ballisticEntityTableBody.innerHTML = "";
       state.savedBallisticEntities.forEach((item, idx) => {
@@ -2889,8 +2965,8 @@ async function init() {
         tr.innerHTML = `
           <td>${idx + 1}</td>
           <td>${item.summary.model}</td>
-          <td>${item.summary.launch}</td>
-          <td>${item.summary.impact}</td>
+          <td>${formatBallisticGeoPosition(item.entity?.trajectory?.launchPoint)}</td>
+          <td>${formatBallisticGeoPosition(item.entity?.trajectory?.terminal?.impactPoint)}</td>
           <td>${item.summary.launchTime ?? "-"}</td>
           <td>${item.summary.impactTot ?? "-"}</td>
           <td><button class="ghost" type="button" data-role="rm-bal" data-index="${idx}">Sil</button></td>
@@ -2915,12 +2991,13 @@ async function init() {
 
       state.points.forEach((point, index) => {
         const isLockedTarget = isLockedTargetWaypointIndex(index);
+        const geo = pointToGeo(point);
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${index + 1}</td>
           <td>${index === 0 ? "START" : isLockedTarget ? "TARGET" : `WP-${index}`}</td>
-          <td><input type="number" step="1" value="${point.x}" data-index="${index}" data-field="x" ${isLockedTarget ? "disabled" : ""}></td>
-          <td><input type="number" step="1" value="${point.y}" data-index="${index}" data-field="y" ${isLockedTarget ? "disabled" : ""}></td>
+          <td><input type="number" step="any" min="-90" max="90" value="${geo ? geo.lat.toFixed(6) : ""}" data-index="${index}" data-field="lat" ${isLockedTarget || !geo ? "disabled" : ""}></td>
+          <td><input type="number" step="any" min="-180" max="180" value="${geo ? geo.lon.toFixed(6) : ""}" data-index="${index}" data-field="lon" ${isLockedTarget || !geo ? "disabled" : ""}></td>
           <td><input type="number" step="1" value="${point.altitude}" data-index="${index}" data-field="altitude"></td>
           <td><input type="number" step="1" value="${point.speed}" data-index="${index}" data-field="speed"></td>
         `;
@@ -2960,21 +3037,29 @@ async function init() {
       const field = event.target.dataset.field;
       const value = Number(event.target.value);
 
-      if (!Number.isFinite(index) || index < 0 || index >= state.points.length || !Number.isFinite(value)) {
+      if (!Number.isFinite(index) || index < 0 || index >= state.points.length || !Number.isFinite(value) || !event.target.value.trim()) {
         return;
       }
-      if (isLockedTargetWaypointIndex(index) && (field === "x" || field === "y")) {
-        event.target.value = state.points[index][field];
+      if (isLockedTargetWaypointIndex(index) && (field === "lat" || field === "lon")) {
+        renderPointTable();
         return;
       }
 
       const candidate = state.points.map((p) => ({ ...p }));
-      candidate[index][field] = value;
+      if (field === "lat" || field === "lon") {
+        const geo = pointToGeo(candidate[index]);
+        const point = geo && geoInputsToPoint(field === "lat" ? value : geo.lat, field === "lon" ? value : geo.lon);
+        if (!point) { renderPointTable(); return; }
+        Object.assign(candidate[index], point);
+        candidate[index].terrainElevationM = null;
+      } else {
+        candidate[index][field] = value;
+      }
 
       const errors = validateAllPoints(candidate, state.selectedPlatform);
       if (errors.length > 0) {
         popupErrors(errors);
-        event.target.value = state.points[index][field];
+        renderPointTable();
         return;
       }
 
@@ -3502,11 +3587,11 @@ async function init() {
       }
 
       const releaseTxt = activeRow?.releasePoint
-        ? `Release=(${activeRow.releasePoint.x.toFixed(1)}, ${activeRow.releasePoint.y.toFixed(1)})`
+        ? `Release (LAT, LON)=(${formatPayloadGeoPoint(activeRow.releasePoint)})`
         : "Release seçilmedi";
       const target = activeRow?.targetSource?.mode ? activeRow.targetPoint : null;
       const targetTxt = target
-        ? `PayloadTarget=(${target.x.toFixed(1)}, ${target.y.toFixed(1)})`
+        ? `Hedef (LAT, LON)=(${formatPayloadGeoPoint(target)})`
         : "Payload hedefi seçilmedi";
 
       const plan = computeTimelinePlan();

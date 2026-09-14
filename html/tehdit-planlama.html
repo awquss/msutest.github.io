@@ -611,12 +611,12 @@
               </div>
               <div id="targetManualCoordinateFields" class="field full inline-field-pair" hidden>
                 <div class="field">
-                  <label for="targetX">Platform Hedef X (m)</label>
-                  <input id="targetX" type="number" step="0.1" value="0">
+                  <label for="targetX">Platform Hedef LAT (°)</label>
+                  <input id="targetX" type="number" step="any" min="-90" max="90" value="0">
                 </div>
                 <div class="field">
-                  <label for="targetY">Platform Hedef Y (m)</label>
-                  <input id="targetY" type="number" step="0.1" value="0">
+                  <label for="targetY">Platform Hedef LON (°)</label>
+                  <input id="targetY" type="number" step="any" min="-180" max="180" value="0">
                 </div>
               </div>
             </div>
@@ -649,20 +649,20 @@
                 <thead>
                   <tr>
                     <th>Nokta</th>
-                    <th>X (m)</th>
-                    <th>Y (m)</th>
+                    <th>LAT (°)</th>
+                    <th>LON (°)</th>
                   </tr>
                 </thead>
                 <tbody id="payloadPointTableBody">
                   <tr>
                     <td>Release</td>
-                    <td><input id="payloadReleaseX" type="number" step="0.1" placeholder="-" data-point="release" data-axis="x"></td>
-                    <td><input id="payloadReleaseY" type="number" step="0.1" placeholder="-" data-point="release" data-axis="y"></td>
+                    <td><input id="payloadReleaseX" type="number" step="any" min="-90" max="90" placeholder="-" data-point="release" data-axis="x"></td>
+                    <td><input id="payloadReleaseY" type="number" step="any" min="-180" max="180" placeholder="-" data-point="release" data-axis="y"></td>
                   </tr>
                   <tr>
                     <td>Target</td>
-                    <td><input id="payloadTargetX" type="number" step="0.1" placeholder="-" data-point="target" data-axis="x"></td>
-                    <td><input id="payloadTargetY" type="number" step="0.1" placeholder="-" data-point="target" data-axis="y"></td>
+                    <td><input id="payloadTargetX" type="number" step="any" min="-90" max="90" placeholder="-" data-point="target" data-axis="x"></td>
+                    <td><input id="payloadTargetY" type="number" step="any" min="-180" max="180" placeholder="-" data-point="target" data-axis="y"></td>
                   </tr>
                 </tbody>
               </table>
@@ -674,8 +674,8 @@
                   <tr>
                     <th>#</th>
                     <th>Silah</th>
-                    <th>Release</th>
-                    <th>Hedef</th>
+                    <th>Release (LAT, LON)</th>
+                    <th>Hedef (LAT, LON)</th>
                     <th>Release Time (s)</th>
                     <th>Payload ToT (s)</th>
                     <th>Release Offset (s)</th>
@@ -750,25 +750,25 @@
                     <thead>
                       <tr>
                         <th>Nokta</th>
-                        <th>X (m)</th>
-                        <th>Y (m)</th>
+                        <th>LAT (°)</th>
+                        <th>LON (°)</th>
                       </tr>
                     </thead>
                     <tbody id="ballisticPointTableBody">
                       <tr>
                         <td>Launch</td>
-                        <td><input id="ballisticLaunchX" type="number" step="0.1" placeholder="-" data-point="launch" data-axis="x"></td>
-                        <td><input id="ballisticLaunchY" type="number" step="0.1" placeholder="-" data-point="launch" data-axis="y"></td>
+                        <td><input id="ballisticLaunchX" type="number" step="any" min="-90" max="90" placeholder="-" data-point="launch" data-axis="x"></td>
+                        <td><input id="ballisticLaunchY" type="number" step="any" min="-180" max="180" placeholder="-" data-point="launch" data-axis="y"></td>
                       </tr>
                       <tr>
                         <td>Impact</td>
-                        <td><input id="ballisticImpactX" type="number" step="0.1" placeholder="-" data-point="impact" data-axis="x"></td>
-                        <td><input id="ballisticImpactY" type="number" step="0.1" placeholder="-" data-point="impact" data-axis="y"></td>
+                        <td><input id="ballisticImpactX" type="number" step="any" min="-90" max="90" placeholder="-" data-point="impact" data-axis="x"></td>
+                        <td><input id="ballisticImpactY" type="number" step="any" min="-180" max="180" placeholder="-" data-point="impact" data-axis="y"></td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <div class="hint">Haritadan kabaca seçtikten sonra Launch/Impact X-Y değerlerini elle metrik hassasiyetle güncelleyebilirsiniz.</div>
+                <div class="hint">Haritadan kabaca seçtikten sonra Launch/Impact LAT/LON değerlerini ondalık derece cinsinden güncelleyebilirsiniz.</div>
                 <div id="ballisticInfo" class="hint">Balistik model seçilmedi.</div>
                 <div class="single-action-row" style="margin-top: 10px;">
                   <button id="addBallisticEntityBtn" class="primary primary-create" type="button">Balistik Tehdidi Senaryoya Ekle</button>
@@ -786,8 +786,8 @@
                   <tr>
                     <th>#</th>
                     <th>Model</th>
-                    <th>Launch</th>
-                    <th>Impact</th>
+                    <th>Launch (LAT, LON)</th>
+                    <th>Impact (LAT, LON)</th>
                     <th>Launch Time (s)</th>
                     <th>Impact Time (s)</th>
                     <th>İşlem</th>
@@ -868,8 +868,8 @@
               <tr>
                 <th>#</th>
                 <th>Tür</th>
-                <th>X (m)</th>
-                <th>Y (m)</th>
+                <th>LAT (°)</th>
+                <th>LON (°)</th>
                 <th>İrtifa (m)</th>
                 <th>Sürat (m/s)</th>
               </tr>
