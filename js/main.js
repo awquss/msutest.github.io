@@ -316,8 +316,11 @@ async function init() {
   bindEvents();
   loadPersistedRegionsState();
   loadPersistedEirsState();
-  await loadDefenseData();
-  await loadDefaultTerrain({ fallbackToSample: false });
+  renderAll();
+  await Promise.all([
+    loadDefenseData(),
+    loadDefaultTerrain({ fallbackToSample: false })
+  ]);
   hydrateStoredTerrainPoints();
   applyImportedScenarioIfPresent();
   await preloadThreatCatalogs();
@@ -471,7 +474,7 @@ async function loadSampleTerrain() {
 async function loadDefaultTerrain({ fallbackToSample = false } = {}) {
   setTerrainStatus("Harita yukleniyor.", "info");
   try {
-    const response = await fetch(`${buildDataUrl(DEFAULT_TERRAIN_PATH)}?v=${Date.now()}`, { cache: "no-store" });
+    const response = await fetch(buildDataUrl(DEFAULT_TERRAIN_PATH), { cache: "no-cache" });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -1431,9 +1434,9 @@ function requestThreatSharedMapRender() {
 }
 
 async function loadDefenseData() {
-  const systemsPromise = fetch(`${buildHssDataUrl("air_defense_systems.json")}?v=${Date.now()}`, { cache: "no-store" });
-  const criteriaPromise = fetch(`${buildHssDataUrl("air_defense_deployment_criteria.json")}?v=${Date.now()}`, { cache: "no-store" });
-  const munitionsPromise = fetch(`${buildHssDataUrl("air_defense_munitions.json")}?v=${Date.now()}`, { cache: "no-store" });
+  const systemsPromise = fetch(buildHssDataUrl("air_defense_systems.json"), { cache: "no-cache" });
+  const criteriaPromise = fetch(buildHssDataUrl("air_defense_deployment_criteria.json"), { cache: "no-cache" });
+  const munitionsPromise = fetch(buildHssDataUrl("air_defense_munitions.json"), { cache: "no-cache" });
 
   const [systemsRes, criteriaRes, munitionsRes] = await Promise.allSettled([systemsPromise, criteriaPromise, munitionsPromise]);
 
