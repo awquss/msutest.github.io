@@ -17,7 +17,7 @@ const LOS_ANGULAR_STEP_DEG = 3;
 const LOS_RADIAL_SAMPLES = 48;
 const LOS_RADAR_SOURCE_HEIGHT_M = 10;
 const LOS_WEZ_SOURCE_HEIGHT_M = 3;
-const DEFAULT_COVERAGE_ALTITUDE_FT = 500;
+const DEFAULT_COVERAGE_ALTITUDE_FT = 3000;
 const FEET_TO_METERS = 0.3048;
 const LOS_CLEARANCE_M = 0;
 const LOS_EFFECTIVE_EARTH_RADIUS_M = 6371000 * (4 / 3);
@@ -1745,7 +1745,7 @@ function onCoverageAltitudeChange() {
 function syncCoverageAltitudeFromControls() {
   const selected = refs.coverageAltitudeRadios.find((radio) => radio.checked);
   const feet = Number(selected?.value);
-  state.coverageTargetAltitudeFt = [500, 1000, 5000, 10000].includes(feet)
+  state.coverageTargetAltitudeFt = [3000, 5000, 10000, 30000].includes(feet)
     ? feet
     : DEFAULT_COVERAGE_ALTITUDE_FT;
 }
