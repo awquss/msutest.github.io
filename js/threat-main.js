@@ -758,10 +758,18 @@ async function init() {
         : 1000;
     }
 
+    function isSelectableSharedTargetAsset(asset) {
+      const assetClass = String(asset?.assetClass || "").trim();
+      const componentRole = String(asset?.componentRole || "").trim().toLowerCase();
+      return assetClass === "protectedAsset" ||
+        assetClass === "eirsRadar" ||
+        (assetClass === "hssRadar" && componentRole !== "ffs");
+    }
+
     function normalizeSharedDefendedAsset(asset) {
       const id = String(asset?.id || "").trim();
       const name = String(asset?.name || "").trim();
-      if (!id || !name) {
+      if (!id || !name || !isSelectableSharedTargetAsset(asset)) {
         return null;
       }
 
@@ -944,17 +952,17 @@ async function init() {
       }
       select.innerHTML = "";
 
-      const manualOption = document.createElement("option");
-      manualOption.value = "manual";
-      manualOption.textContent = manualLabel;
-      select.appendChild(manualOption);
-
       for (const asset of state.sharedDefendedAssets) {
         const option = document.createElement("option");
         option.value = `asset:${asset.id}`;
         option.textContent = formatTargetOptionLabel(asset);
         select.appendChild(option);
       }
+
+      const manualOption = document.createElement("option");
+      manualOption.value = "manual";
+      manualOption.textContent = manualLabel;
+      select.appendChild(manualOption);
 
       select.value = source?.mode === "defendedAsset" && source?.defendedAssetId
         ? `asset:${source.defendedAssetId}`
@@ -968,7 +976,6 @@ async function init() {
       refs.ballisticImpactSelect.innerHTML = "";
 
       refs.ballisticImpactSelect.appendChild(new Option("Impact hedefi seçiniz", ""));
-      refs.ballisticImpactSelect.appendChild(new Option("Manuel Koordinat", "manual"));
 
       for (const asset of state.sharedDefendedAssets) {
         refs.ballisticImpactSelect.appendChild(
@@ -978,6 +985,8 @@ async function init() {
           )
         );
       }
+
+      refs.ballisticImpactSelect.appendChild(new Option("Manuel Koordinat", "manual"));
 
       refs.ballisticImpactSelect.value = state.ballisticImpactSource.mode === "defendedAsset" && state.ballisticImpactSource.defendedAssetId
         ? `asset:${state.ballisticImpactSource.defendedAssetId}`
@@ -1003,17 +1012,17 @@ async function init() {
       attackTargetOption.textContent = "Platform Hedefini Kullan";
       refs.payloadTargetSelect.appendChild(attackTargetOption);
 
-      const manualOption = document.createElement("option");
-      manualOption.value = "manual";
-      manualOption.textContent = "Manuel Koordinat";
-      refs.payloadTargetSelect.appendChild(manualOption);
-
       for (const asset of state.sharedDefendedAssets) {
         const option = document.createElement("option");
         option.value = `asset:${asset.id}`;
         option.textContent = formatTargetOptionLabel(asset);
         refs.payloadTargetSelect.appendChild(option);
       }
+
+      const manualOption = document.createElement("option");
+      manualOption.value = "manual";
+      manualOption.textContent = "Manuel Koordinat";
+      refs.payloadTargetSelect.appendChild(manualOption);
 
       refs.payloadTargetSelect.value = activeRow?.targetSource?.mode === "defendedAsset" && activeRow?.targetSource?.defendedAssetId
         ? `asset:${activeRow.targetSource.defendedAssetId}`

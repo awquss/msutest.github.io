@@ -3023,30 +3023,6 @@ function buildSharedDefendedAssetsPayload() {
         points: [radarCenter]
       });
 
-      const unitFfsLoadout = Array.isArray(unit?.ffsLoadout) ? unit.ffsLoadout : [];
-      const unitFfsComponents = Array.isArray(unit?.components?.ffs) ? unit.components.ffs : [];
-      unitFfsComponents.forEach((ffs, index) => {
-        const ffsCenter = {
-          x: Math.round(numberOrZero(ffs?.x)),
-          y: Math.round(numberOrZero(ffs?.y)),
-          z: Math.round(sampleTerrainElevation(ffs?.x, ffs?.y))
-        };
-        const loadoutRow = unitFfsLoadout[index] || {};
-        const munitionLabel = String(loadoutRow?.munitionCode || "").trim()
-          ? ` (${getMunitionShortLabel(loadoutRow.munitionCode)})`
-          : "";
-        assets.push({
-          id: `${unitId}.FFS${index + 1}`,
-          name: `${unit.regionName} | ${getDeploymentUnitLabel(unit)} Lançer-${index + 1}${munitionLabel}`,
-          assetClass: "launcher",
-          componentRole: "ffs",
-          parentUnitId: unitId,
-          type: "point",
-          HVA_value: 1,
-          center: ffsCenter,
-          points: [ffsCenter]
-        });
-      });
     }
   }
 
@@ -9293,15 +9269,6 @@ function base64ToUint8Array(base64) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
-
-function rotateVector(v, angleRad) {
-  const c = Math.cos(angleRad);
-  const s = Math.sin(angleRad);
-  return {
-    x: v.x * c - v.y * s,
-    y: v.x * s + v.y * c
-  };
 }
 
 function normalizeVector(v) {
