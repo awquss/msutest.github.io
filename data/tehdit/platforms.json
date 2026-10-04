@@ -8,7 +8,8 @@
       "speed": "m/s",
       "turnRate": "deg/s",
       "verticalRate": "m/s",
-      "rcs": "m^2"
+      "rcs": "m^2",
+      "altitude": "m"
     }
   },
   "platforms": [
@@ -30,7 +31,8 @@
         },
         "vertical": {
           "maxClimbRate": 32,
-          "maxDescentRate": 30
+          "maxDescentRate": 30,
+          "serviceCeilingM": 15240
         }
       },
       "payloadCapable": true,
@@ -54,7 +56,8 @@
         },
         "vertical": {
           "maxClimbRate": 250,
-          "maxDescentRate": 230
+          "maxDescentRate": 230,
+          "serviceCeilingM": 15240
         }
       },
       "payloadCapable": true,
@@ -78,7 +81,8 @@
         },
         "vertical": {
           "maxClimbRate": 210,
-          "maxDescentRate": 200
+          "maxDescentRate": 200,
+          "serviceCeilingM": 17100
         }
       },
       "payloadCapable": true,
@@ -102,7 +106,8 @@
         },
         "vertical": {
           "maxClimbRate": 330,
-          "maxDescentRate": 250
+          "maxDescentRate": 250,
+          "serviceCeilingM": 18000
         }
       },
       "payloadCapable": true,
@@ -126,7 +131,8 @@
         },
         "vertical": {
           "maxClimbRate": 8,
-          "maxDescentRate": 6
+          "maxDescentRate": 6,
+          "serviceCeilingM": 6096
         }
       },
       "payloadCapable": true,
@@ -150,7 +156,8 @@
         },
         "vertical": {
           "maxClimbRate": 3,
-          "maxDescentRate": 3
+          "maxDescentRate": 3,
+          "serviceCeilingM": 4000
         }
       },
       "payloadCapable": false,
@@ -174,7 +181,8 @@
         },
         "vertical": {
           "maxClimbRate": 315,
-          "maxDescentRate": 270
+          "maxDescentRate": 270,
+          "serviceCeilingM": 19812
         }
       },
       "payloadCapable": true,
@@ -198,7 +206,8 @@
         },
         "vertical": {
           "maxClimbRate": 30,
-          "maxDescentRate": 25
+          "maxDescentRate": 25,
+          "serviceCeilingM": 13636
         }
       },
       "payloadCapable": true,
@@ -222,7 +231,8 @@
         },
         "vertical": {
           "maxClimbRate": 300,
-          "maxDescentRate": 260
+          "maxDescentRate": 260,
+          "serviceCeilingM": 19812
         }
       },
       "payloadCapable": true,
@@ -246,7 +256,8 @@
         },
         "vertical": {
           "maxClimbRate": 10,
-          "maxDescentRate": 8
+          "maxDescentRate": 8,
+          "serviceCeilingM": 12192
         }
       },
       "payloadCapable": true,
@@ -270,7 +281,8 @@
         },
         "vertical": {
           "maxClimbRate": 6,
-          "maxDescentRate": 5
+          "maxDescentRate": 5,
+          "serviceCeilingM": 9144
         }
       },
       "payloadCapable": true,
@@ -294,7 +306,8 @@
         },
         "vertical": {
           "maxClimbRate": 7,
-          "maxDescentRate": 6
+          "maxDescentRate": 6,
+          "serviceCeilingM": 12192
         }
       },
       "payloadCapable": true,
@@ -318,7 +331,8 @@
         },
         "vertical": {
           "maxClimbRate": 8,
-          "maxDescentRate": 6
+          "maxDescentRate": 6,
+          "serviceCeilingM": 15240
         }
       },
       "payloadCapable": true,
@@ -342,7 +356,8 @@
         },
         "vertical": {
           "maxClimbRate": 305,
-          "maxDescentRate": 270
+          "maxDescentRate": 270,
+          "serviceCeilingM": 15240
         }
       },
       "payloadCapable": true,
@@ -366,7 +381,8 @@
         },
         "vertical": {
           "maxClimbRate": 285,
-          "maxDescentRate": 250
+          "maxDescentRate": 250,
+          "serviceCeilingM": 16459
         }
       },
       "payloadCapable": true,
@@ -390,7 +406,8 @@
         },
         "vertical": {
           "maxClimbRate": 260,
-          "maxDescentRate": 230
+          "maxDescentRate": 230,
+          "serviceCeilingM": 15240
         }
       },
       "payloadCapable": true,

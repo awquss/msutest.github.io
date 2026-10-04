@@ -720,10 +720,42 @@ async function init() {
       if (!asset?.center) {
         return null;
       }
-      return {
-        x: Number(asset.center.x) || 0,
-        y: Number(asset.center.y) || 0
+      return cloneThreatTargetPoint(asset.center);
+    }
+
+    function getThreatPointAltitude(point, fallback = 0) {
+      const rawAltitude = point?.z ?? point?.terrainElevationM ?? point?.altitude ?? point?.elevationM;
+      if (rawAltitude !== null && rawAltitude !== undefined && rawAltitude !== "" && Number.isFinite(Number(rawAltitude))) {
+        return Number(rawAltitude);
+      }
+      return fallback !== null && fallback !== undefined && Number.isFinite(Number(fallback)) ? Number(fallback) : null;
+    }
+
+    function cloneThreatTargetPoint(point, fallbackAltitude = null) {
+      if (!point) {
+        return null;
+      }
+      const cloned = {
+        x: Number(point.x) || 0,
+        y: Number(point.y) || 0
       };
+      const altitude = getThreatPointAltitude(point, fallbackAltitude);
+      if (altitude !== null) {
+        cloned.z = altitude;
+        cloned.terrainElevationM = altitude;
+      }
+      return cloned;
+    }
+
+    function isKamikazePlatform(platform = state.selectedPlatform) {
+      return String(platform?.category || "").toLowerCase() === "kamikazeuav";
+    }
+
+    function getPlatformDefaultWaypointAltitude(platform = state.selectedPlatform) {
+      const serviceCeiling = platform?.kinematics?.vertical?.serviceCeilingM;
+      return Number.isFinite(Number(serviceCeiling))
+        ? Math.round((Number(serviceCeiling) * 2) / 3)
+        : 1000;
     }
 
     function normalizeSharedDefendedAsset(asset) {
@@ -736,12 +768,16 @@ async function init() {
       const type = asset?.type === "area" ? "area" : "point";
       const center = {
         x: Number(asset?.center?.x) || 0,
-        y: Number(asset?.center?.y) || 0
+        y: Number(asset?.center?.y) || 0,
+        z: getThreatPointAltitude(asset?.center, 0),
+        terrainElevationM: getThreatPointAltitude(asset?.center, 0)
       };
       const points = Array.isArray(asset?.points)
         ? asset.points.map((point) => ({
             x: Number(point?.x) || 0,
-            y: Number(point?.y) || 0
+            y: Number(point?.y) || 0,
+            z: getThreatPointAltitude(point, 0),
+            terrainElevationM: getThreatPointAltitude(point, 0)
           }))
         : [];
 
@@ -1086,7 +1122,7 @@ async function init() {
         const point = getDefendedAssetCenter(selectedId);
         if (point && selectedId) {
           state.attackTargetSource.defendedAssetId = selectedId;
-          state.attackTarget = { x: point.x, y: point.y };
+          state.attackTarget = cloneThreatTargetPoint(point);
         } else if (state.sharedDefendedAssets.length === 0) {
           state.attackTargetSource.mode = "manual";
           state.attackTargetSource.defendedAssetId = "";
@@ -1130,7 +1166,7 @@ async function init() {
       if (!row.targetSource?.mode) {
         row.targetPoint = null;
       } else if (row.targetSource.mode === "attackTarget") {
-        row.targetPoint = { x: state.attackTarget.x, y: state.attackTarget.y };
+        row.targetPoint = cloneThreatTargetPoint(state.attackTarget);
         row.targetManual = false;
       } else if (row.targetSource.mode === "defendedAsset") {
         const selectedId =
@@ -1141,15 +1177,15 @@ async function init() {
         const point = getDefendedAssetCenter(selectedId);
         if (point && selectedId) {
           row.targetSource.defendedAssetId = selectedId;
-          row.targetPoint = { x: point.x, y: point.y };
+          row.targetPoint = cloneThreatTargetPoint(point);
           row.targetManual = false;
         } else if (state.sharedDefendedAssets.length === 0) {
           row.targetSource.mode = "attackTarget";
           row.targetSource.defendedAssetId = "";
-          row.targetPoint = { x: state.attackTarget.x, y: state.attackTarget.y };
+          row.targetPoint = cloneThreatTargetPoint(state.attackTarget);
         }
       } else if (!row.targetPoint) {
-        row.targetPoint = { x: state.attackTarget.x, y: state.attackTarget.y };
+        row.targetPoint = cloneThreatTargetPoint(state.attackTarget);
       }
 
       refs.payloadTargetSelect.value = row.targetSource.mode === "defendedAsset" && row.targetSource.defendedAssetId
@@ -1177,7 +1213,7 @@ async function init() {
         const point = getDefendedAssetCenter(selectedId);
         if (point && selectedId) {
           state.ballisticImpactSource.defendedAssetId = selectedId;
-          state.ballisticImpact = { x: point.x, y: point.y };
+          state.ballisticImpact = cloneThreatTargetPoint(point);
         } else if (state.sharedDefendedAssets.length === 0) {
           state.ballisticImpactSource.mode = "manual";
           state.ballisticImpactSource.defendedAssetId = "";
@@ -1516,10 +1552,14 @@ async function init() {
       }
 
       if (state.points.length === 1) {
+        const targetAltitude = isKamikazePlatform()
+          ? getThreatPointAltitude(state.attackTarget, state.points[0].altitude)
+          : state.points[0].altitude;
         state.points.push({
           x: state.attackTarget.x,
           y: state.attackTarget.y,
-          altitude: state.points[0].altitude,
+          altitude: targetAltitude,
+          terrainElevationM: getThreatPointAltitude(state.attackTarget, null),
           speed: state.points[0].speed
         });
         return;
@@ -1528,6 +1568,10 @@ async function init() {
       const last = state.points[state.points.length - 1];
       last.x = state.attackTarget.x;
       last.y = state.attackTarget.y;
+      last.terrainElevationM = getThreatPointAltitude(state.attackTarget, last.terrainElevationM ?? null);
+      if (isKamikazePlatform()) {
+        last.altitude = getThreatPointAltitude(state.attackTarget, last.altitude);
+      }
     }
 
     function buildNextRoutePoints(candidatePoint) {
@@ -1551,7 +1595,7 @@ async function init() {
     function syncPayloadTargetWithAttackIfNeeded() {
       for (const row of state.payloadRows) {
         if (row.targetSource?.mode === "attackTarget" || (!row.targetManual && !row.targetPoint)) {
-          row.targetPoint = { x: state.attackTarget.x, y: state.attackTarget.y };
+          row.targetPoint = cloneThreatTargetPoint(state.attackTarget);
         }
       }
     }
@@ -1899,6 +1943,7 @@ async function init() {
         `Maks. Dönüş: ${p.kinematics.turnRate.maxDegPerSec} deg/s`,
         `Maks. Tırmanma: ${p.kinematics.vertical?.maxClimbRate ?? "-"} m/s`,
         `Maks. Alçalma: ${p.kinematics.vertical?.maxDescentRate ?? "-"} m/s`,
+        `Tavan İrtifası: ${p.kinematics.vertical?.serviceCeilingM ?? "-"} m`,
         `Payload: ${payloadAllowed ? `Evet (max ${p.maxPayloadCount})` : "Hayır"}`
       ].join(" | ");
 
@@ -2040,9 +2085,7 @@ async function init() {
 
       const lastPoint = state.points[state.points.length - 1] || null;
       const defaultSpeed = lastPoint ? lastPoint.speed : state.selectedPlatform.kinematics.speed.min;
-      const defaultAltitude = Number.isFinite(Number(terrainZ))
-        ? Number(terrainZ)
-        : (lastPoint ? lastPoint.altitude : 1000);
+      const defaultAltitude = getPlatformDefaultWaypointAltitude(state.selectedPlatform);
 
       const candidatePoint = { x, y, altitude: defaultAltitude, terrainElevationM: Number.isFinite(Number(terrainZ)) ? Number(terrainZ) : null, speed: defaultSpeed };
       const nextPoints = buildNextRoutePoints(candidatePoint);
@@ -2415,12 +2458,15 @@ async function init() {
       const mode = String(source?.mode || "manual");
       const defendedAssetId = String(source?.defendedAssetId || "").trim() || null;
       const asset = mode === "defendedAsset" && defendedAssetId ? getDefendedAssetById(defendedAssetId) : null;
+      const altitude = getThreatPointAltitude(point, null);
       return {
         mode,
         defendedAssetId: mode === "defendedAsset" ? defendedAssetId : null,
         targetClass: asset?.assetClass || null,
         targetName: asset?.name || null,
-        [pointKey]: point ? [round(point.x, 3), round(point.y, 3)] : null
+        [pointKey]: point ? [round(point.x, 3), round(point.y, 3)] : null,
+        [`${pointKey}3D`]: point && altitude !== null ? [round(point.x, 3), round(point.y, 3), round(altitude, 3)] : null,
+        [`${pointKey}Z`]: altitude !== null ? round(altitude, 3) : null
       };
     }
 
@@ -2724,10 +2770,17 @@ async function init() {
         : Array.isArray(definition?.impactPoint)
           ? definition.impactPoint
           : null;
+      const rawPoint3D = Array.isArray(definition?.targetPoint3D)
+        ? definition.targetPoint3D
+        : Array.isArray(definition?.impactPoint3D)
+          ? definition.impactPoint3D
+          : null;
+      const rawPointZ = definition?.targetPointZ ?? definition?.impactPointZ;
+      const rawAltitude = Array.isArray(rawPoint3D) && rawPoint3D.length >= 3 ? rawPoint3D[2] : rawPointZ;
       const point = rawPoint && rawPoint.length >= 2
-        ? { x: Number(rawPoint[0]) || 0, y: Number(rawPoint[1]) || 0 }
+        ? cloneThreatTargetPoint({ x: rawPoint[0], y: rawPoint[1], z: rawAltitude })
         : fallbackPoint
-          ? { x: Number(fallbackPoint.x) || 0, y: Number(fallbackPoint.y) || 0 }
+          ? cloneThreatTargetPoint(fallbackPoint)
           : null;
 
       if (sourceMode === "defendedAsset" && defendedAssetId) {
@@ -2988,6 +3041,8 @@ async function init() {
 
     function renderPointTable() {
       refs.pointTableBody.innerHTML = "";
+      const serviceCeiling = state.selectedPlatform?.kinematics?.vertical?.serviceCeilingM;
+      const altitudeMaxAttr = Number.isFinite(Number(serviceCeiling)) ? ` max="${Number(serviceCeiling)}"` : "";
 
       state.points.forEach((point, index) => {
         const isLockedTarget = isLockedTargetWaypointIndex(index);
@@ -2998,7 +3053,7 @@ async function init() {
           <td>${index === 0 ? "START" : isLockedTarget ? "TARGET" : `WP-${index}`}</td>
           <td><input type="number" step="any" min="-90" max="90" value="${geo ? geo.lat.toFixed(6) : ""}" data-index="${index}" data-field="lat" ${isLockedTarget || !geo ? "disabled" : ""}></td>
           <td><input type="number" step="any" min="-180" max="180" value="${geo ? geo.lon.toFixed(6) : ""}" data-index="${index}" data-field="lon" ${isLockedTarget || !geo ? "disabled" : ""}></td>
-          <td><input type="number" step="1" value="${point.altitude}" data-index="${index}" data-field="altitude"></td>
+          <td><input type="number" step="1"${altitudeMaxAttr} value="${point.altitude}" data-index="${index}" data-field="altitude"></td>
           <td><input type="number" step="1" value="${point.speed}" data-index="${index}" data-field="speed"></td>
         `;
         refs.pointTableBody.appendChild(tr);
@@ -3095,9 +3150,13 @@ async function init() {
       const maxTurnRate = platform.kinematics?.turnRate?.maxDegPerSec ?? Number.POSITIVE_INFINITY;
       const maxClimb = platform.kinematics?.vertical?.maxClimbRate ?? Number.POSITIVE_INFINITY;
       const maxDescend = platform.kinematics?.vertical?.maxDescentRate ?? Number.POSITIVE_INFINITY;
+      const serviceCeiling = platform.kinematics?.vertical?.serviceCeilingM ?? Number.POSITIVE_INFINITY;
       for (let i = 0; i < points.length; i += 1) {
         if (points[i].speed < minSpeed || points[i].speed > maxSpeed) {
           errors.push(`Nokta ${i + 1} sürat limiti dışında. Min: ${minSpeed} m/s, Max: ${maxSpeed} m/s`);
+        }
+        if (points[i].altitude > serviceCeiling) {
+          errors.push(`Nokta ${i + 1} tavan irtifasını aşıyor. İrtifa: ${points[i].altitude} m, Tavan: ${serviceCeiling} m`);
         }
       }
 
