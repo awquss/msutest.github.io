@@ -154,6 +154,8 @@ window.handleSharedTerrainPoint = (point) => {
     };
 
 window.requestThreatSharedLayoutSync = () => {
+      loadSharedDefendedAssets();
+      syncSharedTargetControls();
       syncTargetInputs();
       syncPayloadPointInputs();
       syncBallisticPointInputs();
@@ -658,7 +660,7 @@ async function init() {
 
     function loadSharedDefendedAssets() {
       try {
-        const windowNameState = readWindowNameState();
+        const windowNameState = readWindowNameState(IS_EMBEDDED ? window.parent : window);
         const sharedPayload = windowNameState[WINDOW_NAME_SHARED_STATE_KEY];
         const namedAssets = Array.isArray(sharedPayload?.assets) ? sharedPayload.assets : [];
         if (namedAssets.length > 0) {
@@ -850,12 +852,12 @@ async function init() {
       return JSON.parse(json);
     }
 
-    function readWindowNameState() {
+    function readWindowNameState(sourceWindow = window) {
       try {
-        if (!window.name) {
+        if (!sourceWindow.name) {
           return {};
         }
-        const parsed = JSON.parse(window.name);
+        const parsed = JSON.parse(sourceWindow.name);
         return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
       } catch (_err) {
         return {};
