@@ -763,6 +763,7 @@ async function init() {
       const componentRole = String(asset?.componentRole || "").trim().toLowerCase();
       return assetClass === "protectedAsset" ||
         assetClass === "eirsRadar" ||
+        assetClass === "launcher" ||
         (assetClass === "hssRadar" && componentRole !== "ffs");
     }
 
@@ -913,7 +914,7 @@ async function init() {
     function getTargetClassLabel(asset) {
       const assetClass = String(asset?.assetClass || "").trim();
       if (assetClass === "launcher") {
-        return "Lançer";
+        return "FFS";
       }
       if (assetClass === "hssRadar") {
         return "HSS Radar";

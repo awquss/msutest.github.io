@@ -3023,6 +3023,25 @@ function buildSharedDefendedAssetsPayload() {
         points: [radarCenter]
       });
 
+      for (const [index, ffs] of (unit.components?.ffs || []).entries()) {
+        const center = {
+          x: Math.round(numberOrZero(ffs.x)),
+          y: Math.round(numberOrZero(ffs.y)),
+          z: Math.round(sampleTerrainElevation(ffs.x, ffs.y))
+        };
+        assets.push({
+          id: `${unitId}.FFS${index + 1}`,
+          name: `${unit.regionName} | ${getDeploymentUnitLabel(unit)} FFS${index + 1}`,
+          assetClass: "launcher",
+          componentRole: "ffs",
+          parentUnitId: unitId,
+          type: "point",
+          HVA_value: 1,
+          center,
+          points: [center]
+        });
+      }
+
     }
   }
 
